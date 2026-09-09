@@ -1,0 +1,560 @@
+# DOCUMENTACION ETAPA 1 - CAMARA TRAMPA INTELIGENTE
+
+Fecha de trabajo: 02-09-2026
+Proyecto: Camara Trampa Inteligente para Reserva Natural
+
+Se genero este archivo en formato TXT porque no esta instalada la dependencia
+python-docx en el entorno utilizado. El prompt permite usar TXT si no es
+posible generar DOCX.
+
+## 1. Objetivo de la etapa
+
+El objetivo de esta etapa fue construir una primera version funcional del
+sistema con tres partes:
+
+- Backend con FastAPI.
+- Conexion con MongoDB usando exclusivamente la base existente Ani_cam.
+- Aplicacion de escritorio PySide6 con login y dashboard.
+
+La arquitectura implementada en esta etapa es:
+
+PySide6 -> FastAPI -> MongoDB
+
+No se implementaron funcionalidades futuras como Raspberry Pi, requests remotos,
+JWT, hashing, IA, subida de archivos ni almacenamiento cloud.
+
+## 2. Estado inicial
+
+El proyecto ubicado en:
+
+C:\Users\Benja\Desktop\ANICAM\proyecto-inicio
+
+estaba en una version inicial. El backend tenia solamente:
+
+- GET /
+- GET /health
+- GET /info
+
+El archivo backend/database/connection.py indicaba que MongoDB quedaba para una
+version futura y no realizaba conexiones.
+
+La aplicacion desktop tenia una ventana PySide6 simple que solo comprobaba si el
+backend respondia. No existia login, dashboard, gestion de camaras ni gestion de
+eventos.
+
+El repositorio estaba limpio antes de comenzar los cambios.
+
+## 3. Estructura del proyecto
+
+Estructura relevante despues de esta etapa:
+
+proyecto-inicio/
+  backend/
+    main.py
+    config/
+      settings.py
+    database/
+      connection.py
+      object_id.py
+    models/
+      schemas.py
+    routers/
+      basic.py
+      autenticacion.py
+      camaras.py
+      eventos.py
+    services/
+      project_service.py
+    requirements.txt
+
+  desktop_app/
+    main.py
+    config/
+      settings.py
+    services/
+      api_client.py
+    widgets/
+      main_window.py
+    requirements.txt
+
+  docs/
+    DOCUMENTACION_ETAPA_1.txt
+
+## 4. Configuracion de MongoDB
+
+Base de datos: Ani_cam
+Conexion: mongodb://localhost:27017/Ani_cam
+
+La configuracion quedo en backend/config/settings.py:
+
+- MONGODB_URI esta fijada como mongodb://localhost:27017/Ani_cam.
+- MONGODB_DATABASE esta fijada como Ani_cam.
+
+No se usa una variable de entorno para cambiar la base en esta etapa. Esto evita
+que el proyecto apunte por error a otra base de datos.
+
+La conexion real se implemento en backend/database/connection.py con PyMongo.
+No se creo una base de datos alternativa. No se uso camaras_trampa,
+camara_trampa, camera_trap ni ningun otro nombre.
+
+## 5. Colecciones utilizadas
+
+Se revisaron las colecciones existentes en MongoDB:
+
+- usuarios
+- camaras
+- eventos
+- archivos
+
+Coleccion usuarios:
+
+Guarda los usuarios del sistema. En esta etapa se consulta para iniciar sesion.
+El documento existente revisado tiene:
+
+- _id como ObjectId automatico.
+- usuario: admin.
+- contraseña: admin123.
+- rol: administrador.
+
+Coleccion camaras:
+
+Guarda las camaras registradas. En esta etapa se implemento listado, alta,
+consulta, modificacion y eliminacion.
+
+Campos usados:
+
+- _id
+- nombre
+- ubicacion
+- estado
+- fecha_instalacion
+
+El _id de camaras se mantiene como string manual, por ejemplo camara001.
+
+Coleccion eventos:
+
+Guarda eventos asociados a una camara. En esta etapa se implemento listado, alta
+y consulta.
+
+Campos usados:
+
+- _id
+- camara_id
+- fecha
+- hora
+- tipo
+- descripcion
+- estado
+
+El _id de eventos lo genera MongoDB como ObjectId.
+
+Coleccion archivos:
+
+Existe y queda preparada para etapas posteriores. En esta etapa no se implemento
+subida, descarga, visualizacion ni reproduccion de archivos.
+
+Campos observados:
+
+- _id
+- id_camara
+- id_evento
+- tipo
+- nombre_archivo
+- fecha_hora
+
+## 6. Relaciones entre colecciones
+
+La relacion principal implementada es:
+
+camaras._id -> eventos.camara_id
+
+Ejemplo real:
+
+camaras._id = camara001
+eventos.camara_id = camara001
+
+La coleccion archivos queda preparada con estas relaciones para una etapa futura:
+
+camaras._id -> archivos.id_camara
+eventos._id -> archivos.id_evento
+
+En esta etapa no se escribio ni se mostro informacion de archivos.
+
+## 7. Backend
+
+El backend se mantiene con FastAPI en backend/main.py.
+
+Se agregaron routers bajo el prefijo:
+
+/api/v1
+
+Rutas activas:
+
+- /api/v1/autenticacion
+- /api/v1/camaras
+- /api/v1/eventos
+
+Tambien se mantienen rutas basicas:
+
+- GET /
+- GET /health
+- GET /info
+
+La conexion con MongoDB se implemento en:
+
+backend/database/connection.py
+
+La conversion de ObjectId se implemento en:
+
+backend/database/object_id.py
+
+La funcion serializar_documento convierte ObjectId a string antes de devolver
+respuestas HTTP. No cambia el tipo real guardado en MongoDB.
+
+Los modelos y validaciones Pydantic se implementaron en:
+
+backend/models/schemas.py
+
+Se mantuvieron nombres de campos en espanol segun la estructura indicada:
+
+- usuario
+- contraseña
+- rol
+- camara_id
+- fecha
+- hora
+- tipo
+- descripcion
+- estado
+- nombre
+- ubicacion
+- fecha_instalacion
+
+## 8. Autenticacion
+
+Endpoint implementado:
+
+POST /api/v1/autenticacion/iniciar-sesion
+
+Recibe:
+
+{
+  "usuario": "admin",
+  "contraseña": "admin123"
+}
+
+Funcionamiento:
+
+1. Busca un documento en la coleccion usuarios.
+2. Compara usuario y contraseña en texto plano.
+3. Si coincide, devuelve mensaje de exito y datos basicos del usuario.
+4. Si no coincide, devuelve error 401.
+
+Importante:
+
+- Todavia no se utiliza JWT.
+- Todavia no se utiliza hashing.
+- La contraseña queda temporalmente en texto plano por tratarse de una etapa de
+  demostracion escolar.
+
+## 9. Gestion de camaras
+
+Endpoints implementados:
+
+GET /api/v1/camaras
+
+Lista todas las camaras.
+
+POST /api/v1/camaras
+
+Crea una camara. El _id se recibe manualmente y debe tener formato similar a
+camara001, camara002, camara003.
+
+GET /api/v1/camaras/{camara_id}
+
+Consulta una camara especifica por su _id.
+
+PUT /api/v1/camaras/{camara_id}
+
+Modifica nombre, ubicacion, estado y fecha_instalacion.
+
+DELETE /api/v1/camaras/{camara_id}
+
+Elimina una camara existente. Si no existe, devuelve 404.
+
+No se agrego un campo identificador. El identificador interno de camaras sigue
+siendo _id.
+
+## 10. Gestion de eventos
+
+Endpoints implementados:
+
+GET /api/v1/eventos
+
+Lista todos los eventos.
+
+POST /api/v1/eventos
+
+Crea un evento. MongoDB genera el _id automaticamente como ObjectId.
+
+GET /api/v1/eventos/{evento_id}
+
+Consulta un evento especifico por ObjectId.
+
+Al crear un evento, el backend verifica que exista una camara con:
+
+camaras._id = eventos.camara_id
+
+Si la camara indicada no existe, se devuelve 404.
+
+## 11. Aplicacion PySide6
+
+La aplicacion desktop se implemento en:
+
+desktop_app/widgets/main_window.py
+
+Pantalla de login:
+
+- Campo Usuario.
+- Campo Contraseña.
+- Boton Iniciar sesion.
+
+Credenciales de prueba:
+
+- usuario: admin
+- contraseña: admin123
+
+La aplicacion usa desktop_app/services/api_client.py para comunicarse con
+FastAPI. No se conecta directamente a MongoDB.
+
+Dashboard:
+
+Tiene dos pestañas:
+
+- Camaras
+- Eventos
+
+Seccion Camaras:
+
+Muestra tabla con:
+
+- ID
+- Nombre
+- Ubicacion
+- Estado
+- Fecha de instalacion
+
+Botones:
+
+- Agregar camara
+- Consultar camara
+- Editar camara
+- Eliminar camara
+- Actualizar
+
+Seccion Eventos:
+
+Muestra tabla con:
+
+- ID
+- Camara
+- Fecha
+- Hora
+- Tipo
+- Descripcion
+- Estado
+
+Botones:
+
+- Agregar evento
+- Consultar evento
+- Actualizar
+
+Cuando la camara existe en la lista cargada, la tabla de eventos muestra el
+nombre de la camara junto con su ID, por ejemplo:
+
+Camara 1 (camara001)
+
+Internamente se conserva camara_id.
+
+## 12. Pruebas realizadas
+
+Pruebas de MongoDB:
+
+- Se conecto correctamente a mongodb://localhost:27017/Ani_cam.
+- Se ejecuto ping correctamente.
+- Se listaron colecciones: archivos, camaras, eventos, usuarios.
+- Se revisaron documentos de ejemplo en usuarios, camaras, eventos y archivos.
+
+Pruebas de compilacion:
+
+- Se ejecuto python -m compileall sobre backend y desktop_app.
+- Resultado final: correcto.
+- Se verifico por comando que settings.MONGODB_URI sea exactamente
+  mongodb://localhost:27017/Ani_cam y settings.MONGODB_DATABASE sea Ani_cam.
+
+Pruebas con FastAPI iniciado temporalmente en http://127.0.0.1:8000:
+
+- GET /health -> 200, respuesta {"status": "ok"}.
+- POST /api/v1/autenticacion/iniciar-sesion con admin/admin123 -> 200, usuario admin.
+- POST /api/v1/autenticacion/iniciar-sesion con contraseña incorrecta -> 401.
+- GET /api/v1/camaras -> 200, cantidad 1.
+- GET /api/v1/camaras/camara001 -> 200, nombre Camara 1.
+- POST /api/v1/camaras con camara temporal camara105610 -> 201.
+- PUT /api/v1/camaras/camara105610 -> 200, estado inactiva.
+- POST /api/v1/eventos con camara_id camara105610 -> 201.
+- GET /api/v1/eventos/{id_temporal} -> 200, camara_id camara105610.
+- GET /api/v1/eventos -> 200, cantidad 2 durante la prueba temporal.
+- DELETE /api/v1/camaras/camara105610 -> 200.
+
+Limpieza de pruebas:
+
+- Se elimino directamente de MongoDB el evento temporal creado para la prueba,
+  porque en esta etapa no existe endpoint DELETE de eventos.
+- Se verifico despues de la limpieza:
+  - camaras: 1
+  - eventos: 1
+  - camara001 sigue con nombre Camara 1
+  - eventos temporales con descripcion "Evento temporal de prueba": 0
+
+Pruebas de escritorio PySide6:
+
+- Se ejecuto un smoke test en modo offscreen.
+- El dashboard cargo 1 camara y 1 evento desde FastAPI.
+- Se ejecuto el flujo de login de la ventana con admin/admin123.
+- Resultado: usuario admin autenticado y dashboard con 2 pestañas.
+
+No se realizo una prueba manual visual con ventana visible.
+
+Prueba final con FastAPI TestClient contra MongoDB real, sin crear datos:
+
+- GET /health -> 200.
+- POST /api/v1/autenticacion/iniciar-sesion con admin/admin123 -> 200.
+- GET /api/v1/camaras -> 200, cantidad 1.
+- GET /api/v1/eventos -> 200, cantidad 1.
+
+## 13. Problemas encontrados
+
+1. El proyecto inicial no tenia MongoDB implementado.
+
+Solucion:
+
+Se agrego conexion con PyMongo usando Ani_cam.
+
+2. La primera compilacion encontro un parentesis sobrante en
+desktop_app/widgets/main_window.py.
+
+Solucion:
+
+Se elimino el parentesis sobrante y se repitio compileall con resultado correcto.
+
+3. python-docx no esta instalado en el entorno.
+
+Solucion:
+
+Se genero DOCUMENTACION_ETAPA_1.txt, formato permitido por el prompt.
+
+4. La consola mostro el campo contraseña con problemas de codificacion visual en
+una salida de prueba.
+
+Solucion:
+
+No se cambio el nombre del campo. El backend consulta y envia el campo real
+"contraseña", y el login con admin/admin123 funciono correctamente.
+
+## 14. Archivos modificados y creados
+
+Archivos modificados:
+
+- backend/main.py
+  - Agrega lifespan de FastAPI para comprobar MongoDB al iniciar.
+  - Incluye routers de autenticacion, camaras y eventos bajo /api/v1.
+
+- backend/config/settings.py
+  - Define nombre/version de la etapa.
+  - Define API_V1_PREFIX.
+  - Define MONGODB_URI como mongodb://localhost:27017/Ani_cam.
+  - Fija MONGODB_DATABASE como Ani_cam.
+
+- backend/database/connection.py
+  - Implementa conexion real con PyMongo.
+  - Expone get_database, comprobar_conexion y cerrar_conexion.
+
+- backend/routers/basic.py
+  - Mantiene endpoints basicos.
+  - GET /health ahora verifica MongoDB.
+  - GET /info devuelve datos de MongoDB configurados.
+
+- backend/requirements.txt
+  - Agrega pymongo.
+
+- desktop_app/main.py
+  - Aplica estilos basicos a la aplicacion PySide6.
+
+- desktop_app/config/settings.py
+  - Cambia API_BASE_URL a http://127.0.0.1:8000/api/v1.
+
+- desktop_app/services/api_client.py
+  - Reemplaza la comprobacion simple por un cliente HTTP completo.
+  - Agrega metodos de login, camaras y eventos.
+  - Agrega manejo de errores amigables.
+
+- desktop_app/widgets/main_window.py
+  - Reemplaza la ventana inicial por login y dashboard.
+  - Agrega tablas, formularios y acciones para camaras/eventos.
+
+- desktop_app/requirements.txt
+  - Agrega requests.
+
+Archivos creados:
+
+- backend/database/object_id.py
+  - Convierte ObjectId a string para respuestas JSON.
+
+- backend/models/schemas.py
+  - Define modelos Pydantic de login, camaras, eventos y mensajes.
+
+- backend/routers/autenticacion.py
+  - Implementa POST /api/v1/autenticacion/iniciar-sesion.
+
+- backend/routers/camaras.py
+  - Implementa CRUD basico de camaras.
+
+- backend/routers/eventos.py
+  - Implementa listado, alta y consulta de eventos.
+
+- docs/DOCUMENTACION_ETAPA_1.txt
+  - Documentacion detallada de esta etapa.
+
+## 15. Funcionalidades NO implementadas
+
+No se implementaron:
+
+- Raspberry Pi.
+- Comunicacion con Raspberry Pi.
+- Requests/comandos remotos.
+- JWT.
+- Hashing de contraseñas.
+- Uploads.
+- Download de archivos.
+- Visualizacion de imagenes/videos.
+- Almacenamiento cloud.
+- IA.
+- Deteccion automatica.
+- Captura real desde camaras.
+- Guardado de binarios de imagen/video en MongoDB.
+
+## 16. Proximos pasos
+
+Proximos pasos logicos para etapas futuras:
+
+- Agregar tests automatizados para backend.
+- Agregar validaciones mas estrictas de fecha y hora.
+- Agregar manejo de roles cuando el proyecto lo requiera.
+- Implementar hashing de contraseñas.
+- Implementar JWT cuando se necesiten sesiones reales.
+- Mejorar el diseño visual del dashboard.
+- Agregar paginacion/filtros para eventos si la cantidad crece.
+- Definir la etapa de archivos sin guardar binarios en MongoDB.
+- Definir posteriormente integracion con Raspberry Pi sin mezclarla con esta
+  etapa inicial.

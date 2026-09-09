@@ -1,25 +1,30 @@
 # Camara Trampa - Proyecto Inicio
 
-Version inicial del sistema de camara trampa.
-
-Esta carpeta es una copia independiente y simplificada del proyecto principal.
+Version de etapa 1 del sistema de camara trampa inteligente.
 
 ## Objetivo
 
-El proyecto busca organizar desde el inicio 2 partes principales:
+Esta etapa implementa:
 
 - Backend con FastAPI.
-- Aplicacion de escritorio con PySide6.
+- Conexion con MongoDB usando la base existente Ani_cam.
+- Login basico sin JWT y sin hashing.
+- Gestion basica de camaras.
+- Gestion basica de eventos.
+- Aplicacion de escritorio PySide6 con login y dashboard.
 
+## MongoDB
 
-En esta version solo se comprueba que la arquitectura existe y que los componentes principales pueden ejecutarse.
-
-## Estructura
+Base de datos obligatoria:
 
 ```text
-proyecto-inicio/
-├── backend/
-├── desktop_app/
+Ani_cam
+```
+
+Conexion:
+
+```text
+mongodb://localhost:27017/Ani_cam
 ```
 
 ## Ejecutar backend
@@ -32,11 +37,17 @@ pip install -r requirements.txt
 uvicorn main:app --reload
 ```
 
-Endpoints disponibles:
+Endpoints principales:
 
-- `GET /`
-- `GET /health`
-- `GET /info`
+- `POST /api/v1/autenticacion/iniciar-sesion`
+- `GET /api/v1/camaras`
+- `POST /api/v1/camaras`
+- `GET /api/v1/camaras/{camara_id}`
+- `PUT /api/v1/camaras/{camara_id}`
+- `DELETE /api/v1/camaras/{camara_id}`
+- `GET /api/v1/eventos`
+- `POST /api/v1/eventos`
+- `GET /api/v1/eventos/{evento_id}`
 
 ## Ejecutar aplicacion desktop
 
@@ -50,8 +61,22 @@ pip install -r requirements.txt
 python main.py
 ```
 
+Credenciales de prueba:
+
+```text
+usuario: admin
+contraseña: admin123
+```
+
+## Documentacion
+
+La documentacion detallada de esta etapa esta en:
+
+```text
+docs/DOCUMENTACION_ETAPA_1.txt
+```
 
 ## Funcionalidades no incluidas todavia
 
-Esta primera version no implementa login, usuarios, camaras, eventos, roles, base de datos, sincronizacion ni captura de imagenes.
-Esas partes quedan planificadas para futuras entregas.
+No se implementan todavia Raspberry Pi, requests/comandos remotos, JWT, hashing,
+uploads, almacenamiento cloud, IA ni captura real de imagenes/videos.
