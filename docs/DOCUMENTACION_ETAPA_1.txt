@@ -1,57 +1,140 @@
-# DOCUMENTACIÓN ETAPA ACTUAL - CÁMARA TRAMPA INTELIGENTE
+# DOCUMENTACIÓN DE LA INTEGRACIÓN DASHBOARD FASTAPI RASPBERRY PI
 
-Fecha de actualización: 20-09-2026
+Fecha de actualización: 25-09-2026
 Proyecto: Cámara Trampa Inteligente para Reserva Natural
-Ruta de trabajo: C:\Users\Benja\Desktop\ANICAM\proyecto-inicio
+Base de datos: Ani_cam
 
-## 1. Objetivo de la etapa
+## 1. Propósito de esta etapa
 
-El objetivo de esta etapa es separar dos conceptos del sistema:
+Esta etapa continúa el sistema existente sin reemplazar su arquitectura. El
+objetivo fue conectar la aplicación de Raspberry Pi con FastAPI mediante HTTP
+para que una petición creada en el Dashboard pueda ser ejecutada por la cámara.
 
-- Peticiones: solicitudes que el usuario realiza desde el dashboard para pedir que una cámara haga algo.
-- Eventos: información visual de actividad ya registrada por cámaras.
+La solución utiliza polling. La Raspberry consulta periódicamente a FastAPI si
+hay una petición pendiente para su cámara. FastAPI es el único componente que
+accede a MongoDB; la Raspberry no conoce ni utiliza la URI de la base de datos.
 
-La arquitectura implementada es:
-
-```text
-Dashboard -> FastAPI -> MongoDB
-                    ^
-                    | HTTP polling y resultado
-                Raspberry -> Picamera2
-```
-
-La carpeta `raspberry_prueba/` forma parte del proyecto. Su interfaz funciona como
-monitor de peticiones y no como una pantalla de captura manual.
-
-## 2. Base de datos
-
-La base utilizada sigue siendo:
+## 2. Arquitectura implementada
 
 ```text
-Ani_cam
+Usuario
+  |
+  v
+Dashboard PySide6
+  |
+  | POST /api/v1/peticiones
+  v
+FastAPI -------------------- MongoDB Ani_cam
+  ^                              |
+  | GET petición pendiente        | peticiones y archivos
+  | PUT resultado                 v
+Raspberry Pi con PySide6 y Picamera2
+  |
+  v
+Foto JPEG o video MP4 en la tarjeta SD
 ```
 
-La conexión configurada en `backend/config/settings.py` sigue siendo:
+El Dashboard no se comunica directamente con la Raspberry. El Dashboard crea y
+consulta peticiones a través de FastAPI. La Raspberry también usa FastAPI, pero
+solo para pedir su trabajo pendiente e informar su resultado.
 
-```text
-mongodb://localhost:27017/Ani_cam
+## 3. Estado real del proyecto
+
+### Implementado
+
+- Backend FastAPI conectado a `Ani_cam`.
+- Dashboard PySide6 conectado a FastAPI.
+- Login, cámaras, peticiones y consulta de eventos existentes.
+- Cámara `camara001` disponible en la colección `camaras`.
+- Creación de peticiones de tipo `foto` y `video` desde el Dashboard.
+- Estados permitidos: `pendiente`, `ejecutado` y `error`.
+- Cliente HTTP de Raspberry para consultar e informar peticiones.
+- Interfaz de Raspberry orientada a peticiones, no a captura manual.
+- Reutilización de Picamera2 para JPEG y MP4 locales.
+- Registro de los metadatos de una captura ejecutada en `archivos`.
+- Visualización de resultado en la tabla del Dashboard.
+- Documentación de configuración de la Raspberry.
+
+### Validado en esta computadora
+
+- La base `Ani_cam` está accesible desde Python con PyMongo.
+- Existen las colecciones `usuarios`, `camaras`, `eventos`, `peticiones` y
+  `archivos`.
+- Existe la cámara `camara001` con el nombre `Camara 1`.
+- El endpoint `GET /api/v1/peticiones/pendientes/camara001` respondió HTTP 200
+  y devolvió una petición pendiente real de MongoDB.
+- Todo el código Python de backend, Dashboard y Raspberry compila.
+- Las dos pruebas unitarias del gestor local de archivos finalizaron correctamente.
+
+### Pendiente de validación física
+
+- Ejecutar una foto real desde una Raspberry con Picamera2.
+- Ejecutar un video real desde una Raspberry con Picamera2 y ffmpeg.
+- Confirmar que la Raspberry informa el resultado al backend usando la red local.
+- Confirmar que MongoDB registra el documento de `archivos` después de una captura.
+- Confirmar en el Dashboard el cambio de estado y el nombre del archivo generado.
+- Comprobar la reproducción MP4 en la interfaz de la Raspberry según el backend
+  multimedia disponible en Raspberry Pi OS.
+
+No se deben considerar estas últimas pruebas como realizadas hasta ejecutarlas
+en el hardware real.
+
+## 4. Flujo de una petición de foto
+
+1. El usuario selecciona `Camara 1` en la pestaña Peticiones del Dashboard.
+2. El usuario presiona `Solicitar foto`.
+3. El Dashboard envía `POST /api/v1/peticiones` a FastAPI con `camara_id` y
+   `tipo: foto`.
+4. FastAPI verifica que `camara001` existe en `Ani_cam.camaras`.
+5. FastAPI crea el documento en `Ani_cam.peticiones` con estado `pendiente`.
+6. La Raspberry configurada con `CAMARA_ID=camara001` consulta periódicamente
+   el endpoint de pendientes.
+7. FastAPI devuelve la petición pendiente más antigua de esa cámara.
+8. La Raspberry usa `ControladorCamara.tomar_foto` para generar el JPEG local.
+9. La Raspberry llama a FastAPI para informar el resultado y la ruta local.
+10. FastAPI inserta los metadatos en `Ani_cam.archivos`, enlaza el archivo con
+    la petición y cambia su estado a `ejecutado`.
+11. Cuando el Dashboard actualiza la tabla, muestra `ejecutado` y el nombre del
+    archivo. La Raspberry permite ver la imagen local en su propia interfaz.
+
+Si la cámara no puede capturar la imagen, la Raspberry informa `error` y un
+mensaje explicativo. FastAPI guarda ese mensaje en la petición.
+
+## 5. Flujo de una petición de video
+
+El inicio del flujo es igual al de foto. La diferencia es la ejecución local:
+
+1. La Raspberry recibe una petición cuyo `tipo` es `video`.
+2. `ControladorCamara.iniciar_video` inicia la grabación con Picamera2,
+   `H264Encoder` y `FfmpegOutput`.
+3. Después de la duración configurada, `ControladorCamara.detener_video`
+   finaliza el MP4.
+4. La Raspberry informa el resultado a FastAPI.
+5. FastAPI registra el archivo y actualiza la petición a `ejecutado`.
+
+La duración por defecto es diez segundos. Se puede cambiar sin editar código
+definiendo la variable de entorno `DURACION_VIDEO_SEGUNDOS`.
+
+## 6. Colecciones y relaciones de MongoDB
+
+La base utilizada continúa siendo exclusivamente `Ani_cam`.
+
+### camaras
+
+La cámara utiliza un identificador textual, por ejemplo:
+
+```json
+{
+  "_id": "camara001",
+  "nombre": "Camara 1",
+  "ubicacion": "Sector Norte",
+  "estado": "activa"
+}
 ```
 
-No se crea otra base de datos.
+### peticiones
 
-Colecciones actuales:
-
-- `usuarios`
-- `camaras`
-- `eventos`
-- `archivos`
-- `peticiones`
-
-## 3. Colección peticiones
-
-La colección `peticiones` guarda solicitudes realizadas desde el dashboard.
-
-Estructura implementada:
+Una petición representa una orden explícita del usuario, no un evento de cámara.
 
 ```json
 {
@@ -59,72 +142,47 @@ Estructura implementada:
   "camara_id": "camara001",
   "tipo": "foto",
   "estado": "pendiente",
-  "fecha_hora": "2026-09-20 18:30:00"
+  "fecha_hora": "2026-09-25 10:30:00"
 }
 ```
 
-Campos:
+Después de una ejecución correcta se agregan `archivo_id` y `nombre_archivo`.
+Después de un fallo se agrega `mensaje_error`. Estos campos son opcionales para
+mantener la compatibilidad con las peticiones creadas antes de esta integración.
 
-- `_id`: ObjectId generado por MongoDB.
-- `camara_id`: ID textual de una cámara existente, por ejemplo `camara001`.
-- `tipo`: acción solicitada.
-- `estado`: estado actual de la petición.
-- `fecha_hora`: fecha y hora en que FastAPI creó la petición.
+### archivos
 
-Tipos permitidos:
+La colección ya existía. Se mantiene su campo histórico `id_camara`. Para una
+captura solicitada se conserva esa relación y se agregan los datos mínimos para
+conectarla con la petición:
 
-- `foto`
-- `video`
-
-Estados permitidos:
-
-- `pendiente`: la solicitud fue creada y todavía no fue ejecutada por la Raspberry.
-- `ejecutado`: la Raspberry realizó correctamente la solicitud.
-- `error`: la solicitud no pudo ejecutarse correctamente.
-
-Las peticiones no crean eventos automáticamente.
-
-## 4. Relación con cámaras
-
-Cada petición debe estar asociada a una cámara existente.
-
-Relación:
-
-```text
-camaras._id -> peticiones.camara_id
+```json
+{
+  "id_camara": "camara001",
+  "peticion_id": "ObjectId de la petición convertido a texto",
+  "tipo": "imagen",
+  "nombre_archivo": "/ruta/local/de/la/Raspberry/foto_001.jpg",
+  "ruta_local": "/ruta/local/de/la/Raspberry/foto_001.jpg",
+  "fecha_hora": "2026-09-25 10:30:15"
+}
 ```
 
-Ejemplo:
+Para video, `tipo` es `video`. No se completa `id_evento`, porque una petición
+del Dashboard no debe convertirse artificialmente en un evento.
+
+La relación completa queda así:
 
 ```text
-camaras._id = camara001
-peticiones.camara_id = camara001
+camara._id -> peticiones.camara_id
+peticiones._id -> archivos.peticion_id
+peticiones.archivo_id -> archivos._id
 ```
 
-Antes de crear una petición, el backend verifica que exista una cámara con ese `_id`.
+## 7. Endpoints relacionados con peticiones
 
-## 5. Backend FastAPI
+### POST /api/v1/peticiones
 
-Rutas activas bajo `/api/v1`:
-
-- `/api/v1/autenticacion`
-- `/api/v1/camaras`
-- `/api/v1/peticiones`
-- `/api/v1/eventos`
-
-También se mantienen:
-
-- `GET /`
-- `GET /health`
-- `GET /info`
-
-## 6. Endpoints de peticiones
-
-`POST /api/v1/peticiones`
-
-Crea una petición para una cámara existente.
-
-Ejemplo de cuerpo:
+Lo consume el Dashboard. Crea una petición en estado `pendiente`.
 
 ```json
 {
@@ -133,208 +191,155 @@ Ejemplo de cuerpo:
 }
 ```
 
-Respuesta: devuelve la petición creada con estado inicial `pendiente`.
+### GET /api/v1/peticiones
 
-`GET /api/v1/peticiones`
+Lo consume el Dashboard para mostrar el historial actualizado de peticiones,
+incluido el archivo generado o el mensaje de error cuando existen.
 
-Lista el historial de peticiones.
+### GET /api/v1/peticiones/pendientes/{camara_id}
 
-`GET /api/v1/peticiones/{peticion_id}`
-
-Consulta una petición específica por su ObjectId.
-
-`PUT /api/v1/peticiones/{peticion_id}`
-
-Actualiza únicamente el estado de la petición.
+Lo consume la Raspberry. Devuelve solo la petición pendiente más antigua de la
+cámara indicada; si no hay ninguna, responde `null`. Esta ruta no modifica la
+base de datos.
 
 Ejemplo:
 
+```text
+GET /api/v1/peticiones/pendientes/camara001
+```
+
+### PUT /api/v1/peticiones/{peticion_id}/resultado
+
+Lo consume exclusivamente la Raspberry al finalizar una captura. Acepta solo
+los estados finales `ejecutado` o `error`; no permite crear estados nuevos.
+
+Ejemplo de captura correcta:
+
 ```json
 {
-  "estado": "ejecutado"
+  "estado": "ejecutado",
+  "nombre_archivo": "foto_001.jpg",
+  "ruta_local": "/home/pi/proyecto/archivos/camara001/fotos/foto_001.jpg"
 }
 ```
 
-Solo se aceptan `pendiente`, `ejecutado` y `error`.
+Ejemplo de error:
 
-`GET /api/v1/peticiones/pendientes/{camara_id}`
+```json
+{
+  "estado": "error",
+  "mensaje_error": "No se pudo inicializar la camara."
+}
+```
 
-Es consultado periódicamente por la Raspberry asociada a esa cámara. Devuelve la
-petición pendiente más antigua o `null` si no existe ninguna.
+Si una petición ya fue resuelta, FastAPI rechaza otro resultado con HTTP 409.
+Esto protege el historial contra actualizaciones tardías o duplicadas.
 
-`PUT /api/v1/peticiones/{peticion_id}/resultado`
+## 8. Interfaz de la Raspberry
 
-Es llamado por la Raspberry después de una captura. Un resultado ejecutado debe
-incluir `nombre_archivo` y `ruta_local`; FastAPI inserta el metadato en `archivos`
-usando el campo existente `id_camara`, conserva `tipo` como `imagen` o `video` y
-agrega `peticion_id` y `ruta_local` para relacionarlo con la solicitud. El backend
-guarda `archivo_id` en la petición. Un resultado con error guarda `mensaje_error`.
+La nueva ventana de `raspberry_prueba` tiene el propósito de supervisar las
+peticiones del Dashboard. Muestra el estado de conexión con FastAPI, el ID de
+la cámara asociada, el historial recibido durante la sesión, su tipo, estado,
+fecha y resultado.
 
-## 7. Eventos
+No incluye botones para solicitar una captura manual. La orden nace siempre en
+el Dashboard. Cuando una petición ejecutada tiene un archivo local disponible,
+la interfaz puede mostrar una foto o reproducir un video.
 
-La colección `eventos` se mantiene.
+Si FastAPI deja de responder, la aplicación no se cierra: muestra el estado de
+desconexión y vuelve a intentarlo en el siguiente intervalo de consulta.
 
-En esta etapa queda como historial visual de solo lectura.
+## 9. Configuración de la Raspberry
 
-Endpoints disponibles:
-
-- `GET /api/v1/eventos`
-- `GET /api/v1/eventos/{evento_id}`
-
-Ya no se expone un endpoint para crear eventos desde el dashboard.
-
-El dashboard no tiene botones de crear, editar ni eliminar eventos.
-
-Las peticiones no insertan documentos en `eventos`.
-
-## 8. Dashboard PySide6
-
-El dashboard mantiene el login existente y la pantalla principal con el usuario autenticado.
-
-Pestañas:
-
-- Cámaras
-- Peticiones
-- Eventos
-
-### Cámaras
-
-Mantiene la administración existente:
-
-- Agregar cámara.
-- Consultar cámara.
-- Editar cámara.
-- Eliminar cámara.
-- Actualizar.
-
-### Peticiones
-
-Permite:
-
-- Seleccionar una cámara existente.
-- Solicitar foto.
-- Solicitar video.
-- Consultar una petición seleccionada.
-- Actualizar el historial.
-- Ver ID, cámara, tipo, estado y fecha/hora.
-
-Cuando el usuario solicita una foto o un video:
-
-1. El dashboard toma el `camara_id` seleccionado.
-2. El dashboard envía `POST /api/v1/peticiones`.
-3. FastAPI valida que la cámara exista.
-4. FastAPI crea el documento en `Ani_cam.peticiones`.
-5. MongoDB genera el `_id`.
-6. La petición queda con estado `pendiente`.
-7. El dashboard refresca el historial.
-
-### Eventos
-
-Permite:
-
-- Consultar un evento seleccionado.
-- Actualizar la tabla.
-
-Si no existen eventos, se muestra la tabla vacía con un mensaje apropiado.
-
-Eventos representa actividad registrada. Peticiones representa solicitudes realizadas.
-
-## 9. Autenticación
-
-Se conserva el sistema actual:
-
-- `POST /api/v1/autenticacion/iniciar-sesion`
-- usuario y contraseña contra la colección `usuarios`
-- sin JWT
-- sin hashing
-
-No se rehizo el login.
-
-## 10. Archivos principales
-
-Backend:
-
-- `backend/main.py`: registra los routers principales y comprueba MongoDB al iniciar.
-- `backend/config/settings.py`: mantiene la configuración de `Ani_cam`.
-- `backend/models/schemas.py`: define modelos Pydantic de autenticación, cámaras, peticiones y eventos.
-- `backend/routers/peticiones.py`: implementa creación, listado, consulta y actualización de peticiones.
-- `backend/routers/eventos.py`: expone eventos como consulta de solo lectura.
-- `backend/database/object_id.py`: serializa ObjectId y datetime para respuestas JSON.
-
-Dashboard:
-
-- `desktop_app/services/api_client.py`: comunica PySide6 con FastAPI.
-- `desktop_app/widgets/main_window.py`: contiene login, dashboard, pestañas y acciones de usuario.
-
-## 11. Raspberry Pi
-
-La Raspberry consulta FastAPI por HTTP con su `camara_id`. Cuando recibe una
-petición de foto, reutiliza `ControladorCamara.tomar_foto`; para video reutiliza
-la grabación MP4 existente durante una duración configurable. Al terminar, informa
-el resultado a FastAPI. Si el backend no responde, la ventana sigue abierta e indica
-la desconexión. La prueba física de cámara requiere la Raspberry y no se ejecuta en
-la computadora de desarrollo.
-
-## 12. Cómo probar
-
-Iniciar MongoDB con la base `Ani_cam`.
-
-Iniciar backend:
+En Raspberry Pi OS se mantienen las dependencias de cámara instaladas con apt:
 
 ```bash
-cd backend
-.venv\Scripts\activate
-uvicorn main:app --reload
+sudo apt update
+sudo apt install -y python3-picamera2 ffmpeg python3-pyside6.qtwidgets python3-pyside6.qtmultimedia
 ```
 
-Probar endpoints:
+También se requiere `requests`, declarado en `raspberry_prueba/requirements.txt`.
 
-1. `GET /api/v1/camaras`
-2. `POST /api/v1/peticiones` con `tipo` = `foto`
-3. `POST /api/v1/peticiones` con `tipo` = `video`
-4. `GET /api/v1/peticiones`
-5. Verificar que las peticiones nacen como `pendiente`
-6. `PUT /api/v1/peticiones/{id}` con `estado` = `ejecutado`
-7. `PUT /api/v1/peticiones/{id}` con `estado` = `error`
-8. Intentar un estado inválido y verificar rechazo
-9. Intentar crear una petición con cámara inexistente y verificar error
-10. `GET /api/v1/eventos`
-11. Verificar que no exista creación de eventos desde el dashboard
-12. Verificar que la pestaña Eventos solo consulte y muestre información
-
-Iniciar dashboard:
+Antes de iniciar la aplicación se debe indicar la IP de la computadora que
+ejecuta FastAPI. No debe utilizarse `127.0.0.1` para una Raspberry remota,
+porque esa dirección apunta a la propia Raspberry.
 
 ```bash
-cd desktop_app
-.venv\Scripts\activate
-python main.py
+export URL_BACKEND="http://192.168.1.50:8000/api/v1"
+export CAMARA_ID="camara001"
+export INTERVALO_CONSULTA_MS="5000"
+export DURACION_VIDEO_SEGUNDOS="10"
+python3 main.py
 ```
 
-Credenciales de prueba:
+La IP `192.168.1.50` es solamente un ejemplo y debe reemplazarse por la IP real
+de la PC del backend. FastAPI debe iniciarse escuchando una dirección accesible
+desde la red local, no solo `127.0.0.1`.
 
-```text
-usuario: admin
-contraseña: admin123
-```
+## 10. Pruebas realizadas y plan de prueba física
 
-## 13. Alcance
+Pruebas realizadas:
 
-Implementado:
+1. Compilación de todo el código Python.
+2. Dos pruebas unitarias del gestor de archivos local.
+3. Consulta real de MongoDB y de la estructura existente de `archivos`.
+4. Llamada real al endpoint de petición pendiente con respuesta HTTP 200.
 
-- Peticiones de foto/video.
-- Validación de cámara existente.
-- Estados cerrados: `pendiente`, `ejecutado`, `error`.
-- Eventos como consulta visual.
-- Dashboard con pestañas `Cámaras | Peticiones | Eventos`.
+Prueba física de foto:
 
-No implementado:
+1. Iniciar MongoDB y FastAPI.
+2. Ejecutar el Dashboard e iniciar sesión.
+3. Crear una petición de foto para `camara001`.
+4. Ejecutar la aplicación en la Raspberry configurada con la URL del backend.
+5. Verificar que se genere el JPEG local.
+6. Verificar que la petición cambie a `ejecutado`.
+7. Verificar que aparezca un documento relacionado en `archivos`.
+8. Actualizar la tabla de Peticiones del Dashboard y comprobar el resultado.
 
-- Comunicación con Raspberry.
-- Polling de peticiones.
-- Generación automática de eventos.
-- Captura real de imágenes o videos.
-- JWT.
-- Sistemas de cola.
-- WebSockets.
-- IA.
-- Almacenamiento en la nube.
+Prueba física de video:
+
+1. Repetir los pasos anteriores creando una petición de video.
+2. Esperar la duración configurada.
+3. Verificar el MP4 local, la actualización de MongoDB y la reproducción en la
+   interfaz de Raspberry si el sistema tiene el backend multimedia requerido.
+
+Prueba de error:
+
+1. Desconectar la cámara o provocar un error controlado de Picamera2.
+2. Crear una petición.
+3. Verificar que la petición termina en `error` con `mensaje_error`.
+
+Prueba de backend desconectado:
+
+1. Con la interfaz de Raspberry iniciada, detener FastAPI temporalmente.
+2. Verificar que la ventana permanezca abierta y muestre desconexión.
+3. Reiniciar FastAPI y comprobar que el polling se recupera.
+
+## 11. Límites actuales
+
+- Los archivos permanecen en la tarjeta SD de la Raspberry; no se suben a la
+  nube ni se transfieren al Dashboard.
+- La reproducción y visualización de archivos se realiza localmente en la
+  Raspberry, no desde el Dashboard.
+- No se implementaron MQTT, Redis, RabbitMQ, WebSockets, Docker ni servicios de
+  mensajería, porque no son necesarios para esta etapa educativa.
+- Los eventos continúan siendo un historial independiente y no se crean desde
+  las peticiones.
+
+## 12. Archivos principales de la integración
+
+- `backend/models/schemas.py`: validación de resultados y campos opcionales de
+  respuesta de peticiones.
+- `backend/routers/peticiones.py`: polling, registro de resultado y relación
+  con `archivos`.
+- `desktop_app/widgets/main_window.py`: columna Resultado en la tabla existente.
+- `raspberry_prueba/comunicacion/cliente_backend.py`: cliente HTTP de la Raspberry.
+- `raspberry_prueba/interfaz/ventana_principal.py`: monitor de peticiones.
+- `raspberry_prueba/config.py`: URL, cámara, intervalo y duración configurables.
+- `raspberry_prueba/README.md`: instalación y ejecución en la Raspberry.
+
+## 13. Versionado
+
+La carpeta inicial de Raspberry se agregó y subió antes de la integración en el
+commit `c92a94b`. La primera implementación de polling se subió en `97c39e8`.
+La compatibilidad con la estructura real de `archivos` se actualizó en `6e145fd`.
