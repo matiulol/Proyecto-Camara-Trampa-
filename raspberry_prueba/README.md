@@ -2,7 +2,9 @@
 
 Esta carpeta contiene una primera prueba independiente para usar una camara CSI de Raspberry Pi con una interfaz local de PySide6. Permite capturar fotos JPEG, iniciar y detener videos MP4, listar las capturas guardadas en la tarjeta SD, ver fotos y reproducir videos desde la misma ventana.
 
-No se conecta a FastAPI, MongoDB, Internet, APIs, JWT, Cloudflare, sensores PIR, IA ni al dashboard existente. Todo lo que crea queda dentro de esta carpeta.
+La Raspberry se conecta únicamente a FastAPI mediante HTTP. No se conecta a MongoDB,
+ni al dashboard. Los JPEG y MP4 se conservan en la tarjeta SD y FastAPI registra sus
+metadatos en la colección `archivos` al recibir el resultado.
 
 ## Tecnologia elegida
 
@@ -66,6 +68,20 @@ Desde esta carpeta:
 ```bash
 python3 main.py
 ```
+
+Antes de ejecutar en la Raspberry, configura la dirección accesible de la PC que
+ejecuta FastAPI. Reemplaza `192.168.1.50` por la IP real de esa PC:
+
+```bash
+export URL_BACKEND="http://192.168.1.50:8000/api/v1"
+export CAMARA_ID="camara001"
+python3 main.py
+```
+
+La interfaz consulta cada cinco segundos `GET /peticiones/pendientes/camara001`.
+Cuando recibe una solicitud, usa Picamera2, guarda el archivo local y llama a
+`PUT /peticiones/{id}/resultado`. Para cambiar el intervalo o los segundos del
+video se pueden definir `INTERVALO_CONSULTA_MS` y `DURACION_VIDEO_SEGUNDOS`.
 
 La ventana muestra el estado de camara. Cuando diga `DISPONIBLE`, las acciones de captura quedan habilitadas.
 

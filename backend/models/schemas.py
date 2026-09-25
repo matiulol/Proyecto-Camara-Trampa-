@@ -131,6 +131,21 @@ class PeticionActualizar(BaseModel):
     estado: Literal["pendiente", "ejecutado", "error"]
 
 
+class PeticionResultado(BaseModel):
+    # Datos que envía exclusivamente la Raspberry cuando termina una petición que
+    # recibió por polling. El backend conserva el control de MongoDB: la Raspberry
+    # nunca escribe documentos directamente en Ani_cam.
+    estado: Literal["ejecutado", "error"]
+    nombre_archivo: str | None = None
+    ruta_local: str | None = None
+    mensaje_error: str | None = None
+
+    @field_validator("nombre_archivo", "ruta_local", "mensaje_error")
+    @classmethod
+    def validar_texto_opcional(cls, valor: str | None) -> str | None:
+        return texto_requerido(valor)
+
+
 class PeticionRespuesta(BaseModel):
     # Modelo de salida de la colección peticiones. El _id es ObjectId en MongoDB,
     # pero se serializa como texto antes de responder por HTTP.
@@ -139,6 +154,9 @@ class PeticionRespuesta(BaseModel):
     tipo: Literal["foto", "video"]
     estado: Literal["pendiente", "ejecutado", "error"]
     fecha_hora: str
+    archivo_id: str | None = None
+    nombre_archivo: str | None = None
+    mensaje_error: str | None = None
 
     model_config = ConfigDict(populate_by_name=True)
 

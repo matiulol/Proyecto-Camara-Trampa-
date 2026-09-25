@@ -9,21 +9,16 @@ La etapa actual implementa:
 - Login básico con `usuarios`.
 - CRUD básico de `camaras`.
 - Gestión de `peticiones` para solicitar foto o video a una cámara.
+- Polling HTTP entre Raspberry y FastAPI, con registro de los archivos locales en `archivos`.
 - Consulta visual de `eventos` existentes.
 - App de escritorio PySide6 con login y dashboard.
 
-Flujo actual:
+Flujo implementado:
 
 ```text
-Dashboard -> FastAPI -> MongoDB
+Dashboard -> FastAPI -> MongoDB <- FastAPI <- Raspberry -> Picamera2
 ```
 
-Flujo futuro:
-
-```text
-Dashboard -> FastAPI -> Raspberry -> Cámara -> respuesta
-```
-
-Importante: la Raspberry todavía no está conectada al backend. Los eventos no se crean desde peticiones ni desde el dashboard.
+Los eventos no se crean desde peticiones ni desde el dashboard.
 
 Documentación detallada: `docs/DOCUMENTACION_ETAPA_1.txt`.

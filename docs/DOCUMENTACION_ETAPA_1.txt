@@ -11,19 +11,17 @@ El objetivo de esta etapa es separar dos conceptos del sistema:
 - Peticiones: solicitudes que el usuario realiza desde el dashboard para pedir que una cámara haga algo.
 - Eventos: información visual de actividad ya registrada por cámaras.
 
-La arquitectura actual implementada es:
+La arquitectura implementada es:
 
 ```text
 Dashboard -> FastAPI -> MongoDB
+                    ^
+                    | HTTP polling y resultado
+                Raspberry -> Picamera2
 ```
 
-La arquitectura futura prevista es:
-
-```text
-Dashboard -> FastAPI -> Raspberry -> Cámara -> respuesta
-```
-
-En esta etapa no se conecta la Raspberry. La carpeta `raspberry_prueba/` no forma parte de este proyecto y no se modifica.
+La carpeta `raspberry_prueba/` forma parte del proyecto. Su interfaz funciona como
+monitor de peticiones y no como una pantalla de captura manual.
 
 ## 2. Base de datos
 
@@ -159,6 +157,17 @@ Ejemplo:
 
 Solo se aceptan `pendiente`, `ejecutado` y `error`.
 
+`GET /api/v1/peticiones/pendientes/{camara_id}`
+
+Es consultado periódicamente por la Raspberry asociada a esa cámara. Devuelve la
+petición pendiente más antigua o `null` si no existe ninguna.
+
+`PUT /api/v1/peticiones/{peticion_id}/resultado`
+
+Es llamado por la Raspberry después de una captura. Un resultado ejecutado debe
+incluir `nombre_archivo` y `ruta_local`; FastAPI inserta el metadato en `archivos`
+y guarda `archivo_id` en la petición. Un resultado con error guarda `mensaje_error`.
+
 ## 7. Eventos
 
 La colección `eventos` se mantiene.
@@ -255,17 +264,14 @@ Dashboard:
 - `desktop_app/services/api_client.py`: comunica PySide6 con FastAPI.
 - `desktop_app/widgets/main_window.py`: contiene login, dashboard, pestañas y acciones de usuario.
 
-## 11. Qué queda pendiente para Raspberry
+## 11. Raspberry Pi
 
-Todavía falta implementar en una etapa posterior:
-
-- Cliente Raspberry.
-- Consulta de peticiones pendientes desde la Raspberry.
-- Ejecución real de foto/video.
-- Respuesta de la Raspberry hacia FastAPI.
-- Cambio automático de estado a `ejecutado` o `error`.
-- Registro futuro de eventos reales cuando ocurra actividad de cámara.
-- Comunicación remota, 4G, SIM o Internet.
+La Raspberry consulta FastAPI por HTTP con su `camara_id`. Cuando recibe una
+petición de foto, reutiliza `ControladorCamara.tomar_foto`; para video reutiliza
+la grabación MP4 existente durante una duración configurable. Al terminar, informa
+el resultado a FastAPI. Si el backend no responde, la ventana sigue abierta e indica
+la desconexión. La prueba física de cámara requiere la Raspberry y no se ejecuta en
+la computadora de desarrollo.
 
 ## 12. Cómo probar
 

@@ -173,9 +173,9 @@ class MainWindow(QMainWindow):
         botones.addStretch()
 
         self.estado_peticiones_label = QLabel("")
-        self.tabla_peticiones = QTableWidget(0, 5)
+        self.tabla_peticiones = QTableWidget(0, 6)
         self.tabla_peticiones.setHorizontalHeaderLabels(
-            ["ID", "Cámara", "Tipo", "Estado", "Fecha y hora"]
+            ["ID", "Cámara", "Tipo", "Estado", "Fecha y hora", "Resultado"]
         )
         self._configurar_tabla(self.tabla_peticiones)
 
@@ -249,8 +249,8 @@ class MainWindow(QMainWindow):
         self._actualizar_selector_peticiones()
 
     def refrescar_peticiones(self) -> None:
-        # Consulta el historial de peticiones. Esta lectura no crea eventos ni
-        # dispara comunicación con Raspberry; solo muestra lo guardado en MongoDB.
+        # Consulta el historial actualizado. El resultado ahora refleja la respuesta
+        # que la Raspberry informó a FastAPI, sin comunicarse con ella directamente.
         try:
             self.peticiones = self.api.listar_peticiones()
         except ApiError as exc:
@@ -267,6 +267,7 @@ class MainWindow(QMainWindow):
                 peticion.get("tipo", ""),
                 peticion.get("estado", ""),
                 peticion.get("fecha_hora", ""),
+                peticion.get("nombre_archivo") or peticion.get("mensaje_error", ""),
             ]
             self._llenar_fila(self.tabla_peticiones, fila, valores, peticion)
 
