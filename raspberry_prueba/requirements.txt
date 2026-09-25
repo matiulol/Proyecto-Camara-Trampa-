@@ -1,0 +1,3 @@
+# Picamera2 y ffmpeg deben instalarse con apt en Raspberry Pi OS.
+# Consulta el archivo README.md antes de instalar paquetes de Python en un entorno virtual.
+PySide6>=6.5,<7
