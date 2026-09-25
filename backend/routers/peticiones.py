@@ -147,11 +147,13 @@ def registrar_resultado_peticion(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Una petición ejecutada debe informar nombre y ruta local del archivo.",
             )
+        # Reutilizamos los campos históricos de Ani_cam.archivos. No escribimos
+        # id_evento porque esta captura proviene de una petición, no de un evento.
         archivo = {
-            "camara_id": peticion["camara_id"],
+            "id_camara": peticion["camara_id"],
             "peticion_id": str(peticion["_id"]),
-            "tipo": peticion["tipo"],
-            "nombre_archivo": resultado.nombre_archivo,
+            "tipo": "imagen" if peticion["tipo"] == "foto" else "video",
+            "nombre_archivo": resultado.ruta_local,
             "ruta_local": resultado.ruta_local,
             "fecha_hora": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }

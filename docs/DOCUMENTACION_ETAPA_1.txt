@@ -166,7 +166,9 @@ petición pendiente más antigua o `null` si no existe ninguna.
 
 Es llamado por la Raspberry después de una captura. Un resultado ejecutado debe
 incluir `nombre_archivo` y `ruta_local`; FastAPI inserta el metadato en `archivos`
-y guarda `archivo_id` en la petición. Un resultado con error guarda `mensaje_error`.
+usando el campo existente `id_camara`, conserva `tipo` como `imagen` o `video` y
+agrega `peticion_id` y `ruta_local` para relacionarlo con la solicitud. El backend
+guarda `archivo_id` en la petición. Un resultado con error guarda `mensaje_error`.
 
 ## 7. Eventos
 
