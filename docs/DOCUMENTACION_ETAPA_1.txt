@@ -1,6 +1,6 @@
 # DOCUMENTACIÓN DE LA INTEGRACIÓN DASHBOARD FASTAPI RASPBERRY PI
 
-Fecha de actualización: 25-09-2026
+Fecha de actualización: 06-10-2026
 Proyecto: Cámara Trampa Inteligente para Reserva Natural
 Base de datos: Ani_cam
 
@@ -332,7 +332,7 @@ Prueba de backend desconectado:
   respuesta de peticiones.
 - `backend/routers/peticiones.py`: polling, registro de resultado y relación
   con `archivos`.
-- `desktop_app/widgets/main_window.py`: columna Resultado en la tabla existente.
+- `desktop_app/widgets/ventana_principal.py`: columna Resultado en la tabla existente.
 - `raspberry_prueba/comunicacion/cliente_backend.py`: cliente HTTP de la Raspberry.
 - `raspberry_prueba/interfaz/ventana_principal.py`: monitor de peticiones.
 - `raspberry_prueba/config.py`: URL, cámara, intervalo y duración configurables.
@@ -343,3 +343,107 @@ Prueba de backend desconectado:
 La carpeta inicial de Raspberry se agregó y subió antes de la integración en el
 commit `c92a94b`. La primera implementación de polling se subió en `97c39e8`.
 La compatibilidad con la estructura real de `archivos` se actualizó en `6e145fd`.
+
+## 14. Inicio en red y comprobaciones previas
+
+El orden de inicio evita errores confusos entre componentes dependientes:
+
+1. Iniciar MongoDB y comprobar que responde. FastAPI ejecuta un `ping` a
+   MongoDB durante su ciclo de vida; por ello necesita `Ani_cam` disponible
+   antes de aceptar peticiones.
+2. Desde la carpeta `backend`, iniciar FastAPI exactamente con:
+
+```bash
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+`uvicorn` es el servidor ASGI; `main:app` selecciona la instancia FastAPI del
+archivo `main.py`; `--host 0.0.0.0` abre escucha en las interfaces de red de la
+PC; `--port 8000` define el puerto TCP; y `--reload` sirve para desarrollo.
+El comando reducido `uvicorn main:app --reload` puede dejar el proceso accesible
+solo desde la PC. `GET /health` confirma el backend y MongoDB sin modificar
+colecciones.
+3. Obtener la IPv4 de la PC con `ipconfig` y probar desde la Raspberry:
+
+```bash
+ping IP_DE_LA_PC
+```
+
+Una respuesta prueba conectividad IP básica. Si no la hay, revisar dirección,
+conexión de ambos equipos, firewall, puerto y la escucha de FastAPI. En una red
+local normalmente están en la misma red, por Wi-Fi o Ethernet, aunque el requisito
+real es que exista una ruta de red entre ambos.
+4. Configurar en la Raspberry `URL_BACKEND`, por variable de entorno o en
+`config.py`, con la URL **base de la API**:
+
+```python
+URL_BACKEND = "http://192.168.1.100:8000/api/v1"
+```
+
+La IP es solo un ejemplo y debe reemplazarse. `localhost` y `127.0.0.1` siempre
+identifican el propio equipo: en la Raspberry no identifican la PC que ejecuta
+FastAPI. El sufijo `/api/v1` es necesario porque `ClienteBackend` agrega las
+rutas de peticiones a esa URL base.
+5. Iniciar la aplicación de Raspberry y, por último, el Dashboard. De este modo
+el Dashboard solo crea peticiones cuando el backend está disponible, y la
+Raspberry puede recogerlas desde su siguiente intervalo de polling.
+
+## 15. Reproducción MP4: hallazgo y límite de validación
+
+La interfaz reproduce con `QMediaPlayer` y `QVideoWidget` de PySide6/Qt
+Multimedia. El código de captura usa `H264Encoder` de Picamera2 y
+`FfmpegOutput`, por lo que el video se genera como flujo H.264 encapsulado en
+MP4. La versión instalada y declarada en la PC de desarrollo es PySide6 6.7.2;
+en Raspberry Pi OS el backend efectivo depende de la distribución y sus paquetes
+multimedia, por lo que debe comprobarse en la Raspberry real.
+
+Un MP4 válido en otra computadora no demuestra que el backend de Qt de la
+Raspberry disponga del mismo códec o complemento. Se agregó manejo de las señales
+asíncronas `errorOccurred` y `mediaStatusChanged`: cuando Qt comunica un error,
+ANICAM detiene esa reproducción, informa el detalle y conserva abierta la
+ventana y el polling. No se reemplazó Qt Multimedia sin una reproducción física
+del problema.
+
+Para investigar una caída nativa aún no reproducida, guardar la salida de
+consola y ejecutar en la Raspberry, sobre el mismo archivo:
+
+```bash
+ffprobe archivo.mp4
+ffmpeg -v error -i archivo.mp4 -f null -
+```
+
+Después revisar `python3-pyside6.qtmultimedia`, `ffmpeg`, el escritorio gráfico
+y la reproducción mediante un reproductor externo. Esto separa un MP4 defectuoso
+de una incompatibilidad del backend Qt. Una terminación del proceso dentro de
+una biblioteca nativa no puede atraparse desde Python, pero los errores que Qt
+emite como señal ya no cierran ANICAM.
+
+## 16. Auditoría de estructura y españolización
+
+La revisión completa comprobó los módulos Python rastreados de `backend`,
+`desktop_app` y `raspberry_prueba`, sus imports locales y sus archivos
+`__init__.py`. No se encontraron directorios vacíos rastreados ni README raíz
+duplicados. Se conservan `README.md` y `README.txt` como guías generales, y el
+README de Raspberry porque documenta dependencias de hardware que no corresponde
+duplicar por completo en la raíz.
+
+Se eliminó `backend/app`: contenía únicamente un `__init__.py` con una promesa
+de arquitectura futura. No era importado ni contenía código activo, por lo que
+su eliminación no modifica FastAPI, endpoints ni la conexión con `Ani_cam`.
+
+Los `__init__.py` restantes se mantienen como marcadores de paquetes y como
+descripción breve de la responsabilidad de cada carpeta. Aunque Python moderno
+puede trabajar con paquetes de espacio de nombres, conservarlos hace explícita
+la estructura educativa y evita cambios innecesarios en imports existentes.
+
+Los nombres que pertenecen a tecnologías externas se conservan por
+compatibilidad: `FastAPI`, `APIRouter`, `QMainWindow`, `QMediaPlayer`,
+`Picamera2`, `ObjectId`, `MongoClient`, `requests`, los métodos HTTP y las URLs
+de la API. Los nombres propios nuevos o modificados se expresan en español,
+como `servicio_proyecto.py`, `obtener_informacion_proyecto`,
+`TAMANO_FOTO` y `TASA_BITS_VIDEO`.
+
+La revisión específica de Raspberry cubrió `config.py`, `main.py`, cámara,
+almacenamiento, comunicación, interfaz y pruebas. Cada módulo explica su
+responsabilidad, composición, herencia cuando aplica, señales Qt, polling HTTP,
+persistencia local y el límite entre Raspberry, FastAPI y MongoDB.

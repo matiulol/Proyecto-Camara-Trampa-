@@ -21,17 +21,20 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-# ApiClient concentra las llamadas HTTP a FastAPI y ApiError representa errores
+# ClienteApi concentra las llamadas HTTP a FastAPI y ErrorApi representa errores
 # listos para mostrar en mensajes de la interfaz.
-from services.api_client import ApiClient, ApiError
+from services.cliente_api import ClienteApi, ErrorApi
 
 
-class MainWindow(QMainWindow):
-    # Ventana principal de la aplicación PySide6. Maneja el login y el dashboard,
-    # pero delega todas las llamadas HTTP al ApiClient para no mezclar UI con red.
+class VentanaPrincipal(QMainWindow):
+    """Ventana principal derivada de ``QMainWindow`` para login y Dashboard.
+
+    La herencia aporta el contenedor de una ventana principal Qt. La clase usa
+    composición con ``ClienteApi`` para separar interfaz y comunicación HTTP.
+    """
     def __init__(self):
         super().__init__()
-        self.api = ApiClient()
+        self.api = ClienteApi()
         self.usuario_actual: dict | None = None
         self.camaras: list[dict] = []
         self.peticiones: list[dict] = []
@@ -84,7 +87,7 @@ class MainWindow(QMainWindow):
                 self.usuario_input.text().strip(),
                 self.contrasena_input.text(),
             )
-        except ApiError as exc:
+        except ErrorApi as exc:
             QMessageBox.warning(self, "Inicio de sesión", str(exc))
             return
         self._mostrar_dashboard()
@@ -146,8 +149,8 @@ class MainWindow(QMainWindow):
         return tab
 
     def _crear_tab_peticiones(self) -> QWidget:
-        # Pestaña nueva para solicitar acciones a una cámara. En esta etapa solo
-        # crea documentos en MongoDB; todavía no hay comunicación con Raspberry.
+        # La petición se crea en FastAPI; luego una Raspberry asociada la obtiene
+        # por polling. El Dashboard no se comunica directamente con la cámara.
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
@@ -232,7 +235,7 @@ class MainWindow(QMainWindow):
         # que se usa para crear nuevas peticiones.
         try:
             self.camaras = self.api.listar_camaras()
-        except ApiError as exc:
+        except ErrorApi as exc:
             QMessageBox.warning(self, "Cámaras", str(exc))
             return
 
@@ -253,7 +256,7 @@ class MainWindow(QMainWindow):
         # que la Raspberry informó a FastAPI, sin comunicarse con ella directamente.
         try:
             self.peticiones = self.api.listar_peticiones()
-        except ApiError as exc:
+        except ErrorApi as exc:
             QMessageBox.warning(self, "Peticiones", str(exc))
             return
 
@@ -282,7 +285,7 @@ class MainWindow(QMainWindow):
             if not self.camaras:
                 self.camaras = self.api.listar_camaras()
             self.eventos = self.api.listar_eventos()
-        except ApiError as exc:
+        except ErrorApi as exc:
             QMessageBox.warning(self, "Eventos", str(exc))
             return
 
@@ -367,12 +370,12 @@ class MainWindow(QMainWindow):
     def _agregar_camara(self) -> None:
         # Abre el formulario de alta de cámara y luego refresca el dashboard para
         # que la nueva cámara aparezca también en el selector de peticiones.
-        dialogo = CamaraDialog(self)
+        dialogo = DialogoCamara(self)
         if dialogo.exec() != QDialog.DialogCode.Accepted:
             return
         try:
             self.api.crear_camara(dialogo.datos())
-        except ApiError as exc:
+        except ErrorApi as exc:
             QMessageBox.warning(self, "Agregar cámara", str(exc))
             return
         self.refrescar_todo()
@@ -385,7 +388,7 @@ class MainWindow(QMainWindow):
             return
         try:
             camara = self.api.obtener_camara(camara["_id"])
-        except ApiError as exc:
+        except ErrorApi as exc:
             QMessageBox.warning(self, "Consultar cámara", str(exc))
             return
         QMessageBox.information(self, "Cámara", self._detalle_camara(camara))
@@ -399,15 +402,15 @@ class MainWindow(QMainWindow):
             return
         try:
             camara = self.api.obtener_camara(camara["_id"])
-        except ApiError as exc:
+        except ErrorApi as exc:
             QMessageBox.warning(self, "Editar cámara", str(exc))
             return
-        dialogo = CamaraDialog(self, camara)
+        dialogo = DialogoCamara(self, camara)
         if dialogo.exec() != QDialog.DialogCode.Accepted:
             return
         try:
             self.api.modificar_camara(camara["_id"], dialogo.datos())
-        except ApiError as exc:
+        except ErrorApi as exc:
             QMessageBox.warning(self, "Editar cámara", str(exc))
             return
         self.refrescar_todo()
@@ -428,7 +431,7 @@ class MainWindow(QMainWindow):
             return
         try:
             self.api.eliminar_camara(camara["_id"])
-        except ApiError as exc:
+        except ErrorApi as exc:
             QMessageBox.warning(self, "Eliminar cámara", str(exc))
             return
         self.refrescar_todo()
@@ -446,7 +449,7 @@ class MainWindow(QMainWindow):
             return
         try:
             self.api.crear_peticion(camara_id, tipo)
-        except ApiError as exc:
+        except ErrorApi as exc:
             QMessageBox.warning(self, "Crear petición", str(exc))
             return
         QMessageBox.information(self, "Peticiones", "Petición creada correctamente.")
@@ -464,7 +467,7 @@ class MainWindow(QMainWindow):
             return
         try:
             peticion = self.api.obtener_peticion(peticion["_id"])
-        except ApiError as exc:
+        except ErrorApi as exc:
             QMessageBox.warning(self, "Consultar petición", str(exc))
             return
         QMessageBox.information(self, "Petición", self._detalle_peticion(peticion))
@@ -478,7 +481,7 @@ class MainWindow(QMainWindow):
             return
         try:
             evento = self.api.obtener_evento(evento["_id"])
-        except ApiError as exc:
+        except ErrorApi as exc:
             QMessageBox.warning(self, "Consultar evento", str(exc))
             return
         QMessageBox.information(self, "Evento", self._detalle_evento(evento))
@@ -532,7 +535,7 @@ class MainWindow(QMainWindow):
         self._mostrar_login()
 
 
-class CamaraDialog(QDialog):
+class DialogoCamara(QDialog):
     # Formulario reutilizado para crear y editar cámaras.
     def __init__(self, parent: QWidget, camara: dict | None = None) -> None:
         super().__init__(parent)
@@ -591,7 +594,7 @@ class CamaraDialog(QDialog):
         super().accept()
 
     def datos(self) -> dict:
-        # Devuelve un diccionario listo para enviar al ApiClient. Al editar no se
+        # Devuelve un diccionario listo para enviar al ClienteApi. Al editar no se
         # incluye _id porque el identificador viaja en la URL.
         datos = {
             "nombre": self.nombre_input.text().strip(),

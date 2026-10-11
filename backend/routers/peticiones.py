@@ -59,8 +59,8 @@ def crear_peticion(
             detail="No existe una cámara con el camara_id indicado.",
         )
 
-    # La petición comienza siempre como pendiente porque todavía no hay Raspberry
-    # conectada que pueda ejecutarla en esta etapa del proyecto.
+    # La petición comienza como pendiente hasta que la Raspberry asociada la
+    # reciba mediante polling y comunique un resultado final.
     datos = peticion.model_dump()
     datos["estado"] = "pendiente"
     datos["fecha_hora"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

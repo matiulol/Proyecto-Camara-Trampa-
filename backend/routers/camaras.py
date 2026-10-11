@@ -115,4 +115,5 @@ def eliminar_camara(camara_id: str, db: Database = Depends(get_database)) -> dic
         )
 
     # Solo después de comprobar que existe se ejecuta la eliminación solicitada.
+    db.camaras.delete_one({"_id": camara_id})
     return {"mensaje": "Camara eliminada correctamente."}

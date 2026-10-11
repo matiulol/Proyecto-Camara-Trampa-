@@ -18,6 +18,7 @@ from routers.peticiones import router as peticiones_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Controla recursos compartidos durante el inicio y cierre de FastAPI."""
     # Al iniciar FastAPI se comprueba que MongoDB responda. Si Ani_cam no está
     # disponible, el error aparece al arrancar y no durante una acción del usuario.
     comprobar_conexion()
@@ -48,8 +49,8 @@ app.include_router(eventos_router, prefix=settings.API_V1_PREFIX)
 
 
 if __name__ == "__main__":
-    # Ejecución local de desarrollo. En producción o pruebas también puede
-    # iniciarse con uvicorn main:app --reload desde la carpeta backend.
+    # Conserva el mismo host y puerto documentados para la ejecución en red. Así
+    # ``python main.py`` no contradice el comando Uvicorn que necesita la Raspberry.
     import uvicorn
 
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

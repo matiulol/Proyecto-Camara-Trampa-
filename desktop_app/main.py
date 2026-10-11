@@ -1,13 +1,28 @@
+"""Punto de entrada del Dashboard PySide6 de ANICAM."""
+
 import sys
 
 from PySide6.QtWidgets import QApplication
 
-from widgets.main_window import MainWindow
+from widgets.ventana_principal import VentanaPrincipal
 
 
-def main():
-    app = QApplication(sys.argv)
-    app.setStyleSheet(
+def iniciar_aplicacion() -> int:
+    """Crea la aplicación Qt, aplica el estilo y muestra la ventana principal.
+
+    ``QApplication`` es el objeto que administra el ciclo de eventos, ventanas
+    y señales de PySide6. El Dashboard no inicia FastAPI: se conecta al backend
+    ya disponible mediante el cliente HTTP de la ventana.
+    """
+    # QApplication debe existir antes de crear cualquier widget: centraliza el
+    # ciclo de eventos, las señales y los recursos compartidos de Qt. ``argv``
+    # permite a Qt procesar sus opciones de línea de comandos si las hubiera.
+    aplicacion = QApplication(sys.argv)
+
+    # La hoja de estilos es una configuración global: los selectores se aplican
+    # a los widgets creados por VentanaPrincipal sin acoplar el diseño visual a
+    # cada método de la interfaz.
+    aplicacion.setStyleSheet(
         """
         QWidget { font-family: Segoe UI, Arial; font-size: 13px; }
         QLineEdit, QComboBox, QTextEdit, QDateEdit, QTimeEdit {
@@ -25,10 +40,18 @@ def main():
         QTableWidget { gridline-color: #d6ded9; selection-background-color: #cfe3d8; }
         """
     )
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
+    # VentanaPrincipal hereda de QMainWindow y, por composición, crea su
+    # ClienteApi para comunicarse con FastAPI. El punto de entrada sólo arma
+    # esos objetos; no contiene reglas del Dashboard ni llamadas HTTP.
+    ventana = VentanaPrincipal()
+    ventana.show()
+
+    # ``exec`` entrega el control al ciclo de eventos hasta que se cierren las
+    # ventanas. Su código de salida se devuelve al sistema operativo para que
+    # el cierre de la aplicación sea ordenado y verificable desde una terminal.
+    return aplicacion.exec()
 
 
 if __name__ == "__main__":
-    main()
+    # SystemExit conserva el código devuelto por Qt como código del proceso.
+    raise SystemExit(iniciar_aplicacion())
