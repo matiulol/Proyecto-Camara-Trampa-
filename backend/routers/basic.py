@@ -3,7 +3,7 @@
 # APIRouter reúne rutas que no pertenecen a una colección específica de Ani_cam.
 from fastapi import APIRouter
 
-# settings aporta el nombre y la conexión configurada de la aplicación.
+# settings aporta el nombre y la base configurada de la aplicación.
 from config.settings import settings
 # comprobar_conexion ejecuta un ping sin modificar datos de MongoDB.
 from database.connection import comprobar_conexion
@@ -35,11 +35,10 @@ def health_check():
 @router.get("/info")
 def project_info():
     """Expone información diagnóstica de la instalación actual."""
-    # GET /info devuelve datos descriptivos usados para diagnosticar la instalación.
-    # La configuración se lee desde settings para reflejar el entorno realmente activo.
+    # GET /info devuelve datos descriptivos sin exponer la URI ni credenciales.
     info = obtener_informacion_proyecto()
     info["mongodb"] = {
         "base_de_datos": settings.MONGODB_DATABASE,
-        "conexion": settings.MONGODB_URI,
+        "configurada": True,
     }
     return info

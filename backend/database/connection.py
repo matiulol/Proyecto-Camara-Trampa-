@@ -4,19 +4,31 @@
 # se usa para indicar que la variable database representa una base concreta.
 from pymongo import MongoClient
 from pymongo.database import Database
+from pymongo.errors import ConfigurationError, ConnectionFailure, OperationFailure
 
 # settings centraliza la URI, el nombre Ani_cam y el tiempo máximo de conexión.
 # Así ningún router escribe estos valores directamente en su propio código.
 from config.settings import settings
 
 
+def _crear_cliente() -> MongoClient:
+    """Crea el cliente sin permitir que una URI inválida llegue a los registros."""
+    try:
+        return MongoClient(
+            settings.MONGODB_URI,
+            serverSelectionTimeoutMS=settings.MONGODB_TIMEOUT_MS,
+        )
+    except ConfigurationError:
+        raise RuntimeError(
+            "MONGODB_URI no tiene un formato válido. Revise backend/.env sin "
+            "copiar la URI ni la contraseña en los registros."
+        ) from None
+
+
 # Este cliente se crea una sola vez cuando FastAPI importa este módulo. Todos los
 # endpoints reutilizan la misma configuración en lugar de abrir una conexión por
 # cada solicitud HTTP, lo que simplifica el proyecto y evita recursos repetidos.
-client: MongoClient = MongoClient(
-    settings.MONGODB_URI,
-    serverSelectionTimeoutMS=settings.MONGODB_TIMEOUT_MS,
-)
+client: MongoClient = _crear_cliente()
 # Selecciona exactamente la base existente Ani_cam. Esta línea no crea otra base:
 # MongoDB solo la materializaría al insertar un documento, operación que realizan
 # los routers ya existentes cuando corresponde.
@@ -34,7 +46,15 @@ def comprobar_conexion() -> None:
     # Envía el comando administrativo ping al servidor de MongoDB. No modifica
     # documentos: sirve para comprobar al iniciar la API o en /health que Ani_cam
     # está disponible antes de atender operaciones del Dashboard o Raspberry.
-    client.admin.command("ping")
+    try:
+        client.admin.command("ping")
+    except (ConfigurationError, ConnectionFailure, OperationFailure) as exc:
+        # No se propaga el error original: algunos controladores incluyen la URI
+        # configurada y nunca debe aparecer una contraseña en logs o respuestas.
+        raise RuntimeError(
+            "No se pudo conectar a MongoDB. Verifique MONGODB_URI, el acceso de red "
+            "a Atlas, el usuario de base de datos y que MONGODB_DATABASE sea Ani_cam."
+        ) from None
 
 
 def cerrar_conexion() -> None:
