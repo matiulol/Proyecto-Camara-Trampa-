@@ -1,10 +1,12 @@
 # Qt aporta constantes de alineación y roles para guardar datos en las tablas.
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QDesktopServices
 # Widgets de PySide6 usados para construir login, pestañas, formularios,
 # tablas y mensajes del dashboard.
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -17,6 +19,7 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -138,9 +141,9 @@ class VentanaPrincipal(QMainWindow):
             botones.addWidget(boton)
         botones.addStretch()
 
-        self.tabla_camaras = QTableWidget(0, 5)
+        self.tabla_camaras = QTableWidget(0, 6)
         self.tabla_camaras.setHorizontalHeaderLabels(
-            ["ID", "Nombre", "Ubicación", "Estado", "Fecha de instalación"]
+            ["ID", "Nombre", "Ubicación", "Estado", "Fecha de instalación", "Archivos"]
         )
         self._configurar_tabla(self.tabla_camaras)
 
@@ -176,9 +179,9 @@ class VentanaPrincipal(QMainWindow):
         botones.addStretch()
 
         self.estado_peticiones_label = QLabel("")
-        self.tabla_peticiones = QTableWidget(0, 6)
+        self.tabla_peticiones = QTableWidget(0, 7)
         self.tabla_peticiones.setHorizontalHeaderLabels(
-            ["ID", "Cámara", "Tipo", "Estado", "Fecha y hora", "Resultado"]
+            ["ID", "Cámara", "Tipo", "Estado", "Fecha y hora", "Resultado", "Visualizar"]
         )
         self._configurar_tabla(self.tabla_peticiones)
 
@@ -204,9 +207,9 @@ class VentanaPrincipal(QMainWindow):
         botones.addStretch()
 
         self.estado_eventos_label = QLabel("")
-        self.tabla_eventos = QTableWidget(0, 7)
+        self.tabla_eventos = QTableWidget(0, 8)
         self.tabla_eventos.setHorizontalHeaderLabels(
-            ["ID", "Cámara", "Fecha", "Hora", "Tipo", "Descripción", "Estado"]
+            ["ID", "Cámara", "Fecha", "Hora", "Tipo", "Descripción", "Estado", "Visualizar"]
         )
         self._configurar_tabla(self.tabla_eventos)
 
@@ -249,6 +252,7 @@ class VentanaPrincipal(QMainWindow):
                 camara.get("fecha_instalacion", ""),
             ]
             self._llenar_fila(self.tabla_camaras, fila, valores, camara)
+            self._boton_archivos(self.tabla_camaras, fila, 5, "camara", camara.get("_id", ""), True)
         self._actualizar_selector_peticiones()
 
     def refrescar_peticiones(self) -> None:
@@ -273,6 +277,8 @@ class VentanaPrincipal(QMainWindow):
                 peticion.get("nombre_archivo") or peticion.get("mensaje_error", ""),
             ]
             self._llenar_fila(self.tabla_peticiones, fila, valores, peticion)
+            disponible = peticion.get("estado") == "ejecutado" and bool(peticion.get("archivo_id"))
+            self._boton_archivos(self.tabla_peticiones, fila, 6, "peticion", peticion.get("_id", ""), disponible)
 
         self.estado_peticiones_label.setText(
             "No hay peticiones registradas." if not self.peticiones else ""
@@ -303,6 +309,7 @@ class VentanaPrincipal(QMainWindow):
                 evento.get("estado", ""),
             ]
             self._llenar_fila(self.tabla_eventos, fila, valores, evento)
+            self._boton_archivos(self.tabla_eventos, fila, 7, "evento", evento.get("_id", ""), True)
 
         self.estado_eventos_label.setText(
             "No hay eventos registrados." if not self.eventos else ""
@@ -322,6 +329,50 @@ class VentanaPrincipal(QMainWindow):
             item.setData(Qt.ItemDataRole.UserRole, datos)
             tabla.setItem(fila, columna, item)
         tabla.resizeColumnsToContents()
+
+    def _boton_archivos(self, tabla: QTableWidget, fila: int, columna: int, origen: str, identificador: str, habilitado: bool) -> None:
+        """Añade acceso a archivos sin asumir que eventos o peticiones los tengan."""
+        boton = QPushButton("Visualizar")
+        boton.setEnabled(habilitado)
+        boton.setToolTip("No hay un archivo disponible." if not habilitado else "Consultar archivos disponibles")
+        boton.clicked.connect(lambda: self._mostrar_archivos(origen, identificador))
+        tabla.setCellWidget(fila, columna, boton)
+
+    def _mostrar_archivos(self, origen: str, identificador: str) -> None:
+        """Lista archivos relacionados y genera cada URL temporal al abrirla."""
+        try:
+            metodos = {
+                "camara": self.api.listar_archivos_camara,
+                "peticion": self.api.listar_archivos_peticion,
+                "evento": self.api.listar_archivos_evento,
+            }
+            archivos = metodos[origen](identificador)
+        except ErrorApi as exc:
+            QMessageBox.warning(self, "Archivos", str(exc))
+            return
+        disponibles = [a for a in archivos if a.get("estado_subida") == "confirmada" and a.get("_id")]
+        if not disponibles:
+            QMessageBox.information(self, "Archivos", "No hay archivos disponibles para visualizar.")
+            return
+        dialogo = QDialog(self)
+        dialogo.setWindowTitle("Archivos disponibles")
+        layout = QVBoxLayout(dialogo)
+        for archivo in disponibles:
+            etiqueta = f"{archivo.get('nombre_archivo', 'Archivo')} — {archivo.get('tipo', '')} — {archivo.get('fecha_hora', '')}"
+            boton = QPushButton(etiqueta)
+            boton.clicked.connect(lambda _, a=archivo: self._abrir_archivo(a))
+            layout.addWidget(boton)
+        dialogo.exec()
+
+    def _abrir_archivo(self, archivo: dict) -> None:
+        """Abre el visor predeterminado con un enlace B2 privado y de corta vida."""
+        try:
+            respuesta = self.api.enlace_visualizacion(archivo["_id"])
+        except ErrorApi as exc:
+            QMessageBox.warning(self, "Visualizar", str(exc))
+            return
+        if not QDesktopServices.openUrl(QUrl(respuesta["url"])):
+            QMessageBox.warning(self, "Visualizar", "No se pudo abrir el visor predeterminado.")
 
     def _actualizar_selector_peticiones(self) -> None:
         # Rellena el combo de cámaras de la pestaña Peticiones con los IDs reales
@@ -487,13 +538,49 @@ class VentanaPrincipal(QMainWindow):
         QMessageBox.information(self, "Evento", self._detalle_evento(evento))
 
     def _detalle_camara(self, camara: dict) -> str:
-        # Formatea una cámara para mostrarla en una ventana de información.
+        """Formatea la cámara y su configuración PIR para consulta de solo lectura.
+
+        El backend conserva estos campos por cámara. Se comprueba su presencia
+        antes de mostrarlos para que documentos históricos no aparezcan como si
+        tuvieran una configuración que nunca se guardó.
+        """
+        pir_habilitado = camara.get("pir_habilitado")
+        tipo_pir = camara.get("pir_tipo_captura")
+        cooldown = camara.get("pir_cooldown_segundos")
+
+        if pir_habilitado is None:
+            detalle_pir = "Estado del sensor: No disponible en este registro."
+        elif pir_habilitado:
+            tipo_visible = {"foto": "Fotografía", "video": "Video"}.get(
+                tipo_pir, "No disponible"
+            )
+            cooldown_visible = (
+                f"{cooldown} segundos" if isinstance(cooldown, int) else "No disponible"
+            )
+            detalle_pir = (
+                "Estado del sensor: Habilitado\n"
+                f"Tipo de captura automática: {tipo_visible}\n"
+                f"Cooldown entre capturas automáticas: {cooldown_visible}"
+            )
+        else:
+            detalle_pir = (
+                "Estado del sensor: Deshabilitado\n"
+                "No se realizarán capturas automáticas por detección de movimiento.\n"
+                "Tipo de captura automática: No aplica\n"
+                "Cooldown entre capturas automáticas: No aplica"
+            )
+
         return (
             f"ID: {camara.get('_id', '')}\n"
             f"Nombre: {camara.get('nombre', '')}\n"
             f"Ubicación: {camara.get('ubicacion', '')}\n"
             f"Estado: {camara.get('estado', '')}\n"
-            f"Fecha de instalación: {camara.get('fecha_instalacion', '')}"
+            f"Fecha de instalación: {camara.get('fecha_instalacion', '')}\n\n"
+            "Sensor de movimiento (PIR)\n"
+            f"{detalle_pir}\n"
+            "El cooldown es el tiempo de espera entre capturas automáticas provocadas por movimiento.\n"
+            "Rango permitido: mínimo 3 segundos y máximo 3600 segundos.\n"
+            "Las peticiones manuales siguen funcionando independientemente de esta configuración."
         )
 
     def _detalle_peticion(self, peticion: dict) -> str:
@@ -550,6 +637,14 @@ class DialogoCamara(QDialog):
         self.estado_input = QComboBox()
         self.estado_input.addItems(["activa", "inactiva", "mantenimiento"])
         self.fecha_input = QLineEdit()
+        # Esta configuración persiste en la cámara elegida y la Raspberry la
+        # consulta; no es un control meramente visual del Dashboard.
+        self.pir_habilitado_input = QCheckBox("Activar detección PIR")
+        self.pir_tipo_input = QComboBox()
+        self.pir_tipo_input.addItems(["foto", "video"])
+        self.pir_cooldown_input = QSpinBox()
+        self.pir_cooldown_input.setRange(3, 3600)
+        self.pir_cooldown_input.setValue(10)
         self.fecha_input.setPlaceholderText("dd-mm-aaaa")
 
         form.addRow("ID", self.id_input)
@@ -557,6 +652,9 @@ class DialogoCamara(QDialog):
         form.addRow("Ubicación", self.ubicacion_input)
         form.addRow("Estado", self.estado_input)
         form.addRow("Fecha de instalación", self.fecha_input)
+        form.addRow("Sensor PIR", self.pir_habilitado_input)
+        form.addRow("Captura por PIR", self.pir_tipo_input)
+        form.addRow("Cooldown PIR (segundos)", self.pir_cooldown_input)
 
         botones = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -576,6 +674,9 @@ class DialogoCamara(QDialog):
             self.ubicacion_input.setText(camara.get("ubicacion", ""))
             self.estado_input.setCurrentText(camara.get("estado", "activa"))
             self.fecha_input.setText(camara.get("fecha_instalacion", ""))
+            self.pir_habilitado_input.setChecked(camara.get("pir_habilitado", False))
+            self.pir_tipo_input.setCurrentText(camara.get("pir_tipo_captura", "foto"))
+            self.pir_cooldown_input.setValue(camara.get("pir_cooldown_segundos", 10))
 
     def accept(self) -> None:
         # Valida campos mínimos antes de cerrar el diálogo. La validación final de
@@ -601,6 +702,9 @@ class DialogoCamara(QDialog):
             "ubicacion": self.ubicacion_input.text().strip(),
             "estado": self.estado_input.currentText(),
             "fecha_instalacion": self.fecha_input.text().strip(),
+            "pir_habilitado": self.pir_habilitado_input.isChecked(),
+            "pir_tipo_captura": self.pir_tipo_input.currentText(),
+            "pir_cooldown_segundos": self.pir_cooldown_input.value(),
         }
         if not self.camara:
             datos["_id"] = self.id_input.text().strip()

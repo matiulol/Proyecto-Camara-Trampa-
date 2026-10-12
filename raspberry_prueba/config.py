@@ -42,3 +42,8 @@ DURACION_VIDEO_SEGUNDOS = int(os.getenv("DURACION_VIDEO_SEGUNDOS", "10"))
 # datos que deban guardarse en MongoDB.
 TAMANO_FOTO = (1920, 1080)
 TASA_BITS_VIDEO = 10_000_000
+# El pin BCM no se presupone: debe coincidir con el cable OUT del PIR. Al quedar
+# vacío el sensor no se inicializa y las capturas manuales continúan disponibles.
+PIR_PIN_BCM = os.getenv("PIR_PIN_BCM", "").strip()
+PIR_HABILITADO_LOCAL = os.getenv("PIR_HABILITADO_LOCAL", "false").lower() == "true"
+INTERVALO_CONFIGURACION_PIR_MS = int(os.getenv("INTERVALO_CONFIGURACION_PIR_MS", "30000"))

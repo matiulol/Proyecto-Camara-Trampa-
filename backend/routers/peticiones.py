@@ -5,7 +5,7 @@ from datetime import datetime
 from bson import ObjectId
 # APIRouter agrupa endpoints; Depends inyecta MongoDB; HTTPException devuelve
 # errores claros al cliente; status evita escribir códigos HTTP "mágicos".
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 # Database tipa la conexión que se recibe desde database.connection.
 from pymongo.database import Database
 
@@ -20,6 +20,7 @@ from models.schemas import (
     PeticionRespuesta,
     PeticionResultado,
 )
+from services.servicio_b2 import ErrorB2, clave_objeto, subir_archivo
 
 
 # Agrupa todos los endpoints de peticiones bajo /api/v1/peticiones.
@@ -140,27 +141,71 @@ def registrar_resultado_peticion(
     if resultado.estado == "error":
         cambios["mensaje_error"] = resultado.mensaje_error or "La Raspberry no pudo completar la captura."
     else:
-        # Una captura correcta debe aportar el archivo local que se generó. El
-        # archivo continúa en la tarjeta SD; MongoDB guarda solo sus metadatos.
-        if not resultado.nombre_archivo or not resultado.ruta_local:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Una petición ejecutada debe informar nombre y ruta local del archivo.",
-            )
-        # Reutilizamos los campos históricos de Ani_cam.archivos. No escribimos
-        # id_evento porque esta captura proviene de una petición, no de un evento.
-        archivo = {
-            "id_camara": peticion["camara_id"],
-            "peticion_id": str(peticion["_id"]),
-            "tipo": "imagen" if peticion["tipo"] == "foto" else "video",
-            "nombre_archivo": resultado.ruta_local,
-            "ruta_local": resultado.ruta_local,
-            "fecha_hora": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        }
-        archivo_id = db.archivos.insert_one(archivo).inserted_id
-        cambios["archivo_id"] = str(archivo_id)
-        cambios["nombre_archivo"] = resultado.nombre_archivo
+        # Una captura no queda ejecutada hasta que /archivo confirma B2. Esta
+        # ruta se conserva para informar errores de hardware o transferencia.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Use la carga de archivo para confirmar una captura ejecutada.",
+        )
 
     db.peticiones.update_one({"_id": ObjectId(peticion_id)}, {"$set": cambios})
     actualizada = db.peticiones.find_one({"_id": ObjectId(peticion_id)})
     return serializar_documento(actualizada)
+
+
+@router.post("/{peticion_id}/archivo", response_model=PeticionRespuesta)
+def recibir_archivo_capturado(
+    peticion_id: str,
+    archivo: UploadFile = File(...),
+    db: Database = Depends(get_database),
+) -> dict:
+    """Recibe una captura ya guardada en SD, la sube a B2 y recién la confirma.
+
+    La Raspberry nunca conoce las credenciales B2: conserva su copia local y usa
+    este canal HTTP existente para transferir los bytes al backend.
+    """
+    peticion = _obtener_peticion_o_404(peticion_id, db)
+    if peticion["estado"] == "ejecutado":
+        existente = db.archivos.find_one({"peticion_id": peticion_id, "estado_subida": "confirmada"})
+        if existente:
+            return serializar_documento(peticion)
+        raise HTTPException(status_code=409, detail="La petición ya fue resuelta.")
+    if peticion["estado"] == "error":
+        raise HTTPException(status_code=409, detail="La petición ya tiene un error registrado.")
+
+    extension = (archivo.filename or "").lower().rsplit(".", 1)[-1]
+    esperado = {"foto": {"jpg", "jpeg"}, "video": {"mp4"}}[peticion["tipo"]]
+    if extension not in esperado:
+        raise HTTPException(status_code=422, detail="El tipo de archivo no coincide con la petición.")
+
+    tipo = "imagen" if peticion["tipo"] == "foto" else "video"
+    contenido = "image/jpeg" if tipo == "imagen" else "video/mp4"
+    clave = clave_objeto(peticion["camara_id"], peticion_id, archivo.filename or "captura", tipo)
+    try:
+        # upload_fileobj transmite desde el archivo temporal HTTP; no depende de
+        # ninguna ruta de la Raspberry y no duplica el objeto al reintentar.
+        subir_archivo(archivo.file, clave, contenido)
+    except ErrorB2 as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from None
+    finally:
+        archivo.file.close()
+
+    # La consulta previa hace idempotente el registro si B2 confirmó una subida
+    # anterior pero la Raspberry repite la solicitud por un corte de red.
+    existente = db.archivos.find_one({"peticion_id": peticion_id})
+    fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    datos_archivo = {
+        "id_camara": peticion["camara_id"], "peticion_id": peticion_id,
+        "tipo": tipo, "nombre_archivo": archivo.filename, "fecha_hora": fecha,
+        "clave_b2": clave, "estado_subida": "confirmada", "tipo_contenido": contenido,
+    }
+    if existente:
+        db.archivos.update_one({"_id": existente["_id"]}, {"$set": datos_archivo})
+        archivo_id = existente["_id"]
+    else:
+        archivo_id = db.archivos.insert_one(datos_archivo).inserted_id
+    db.peticiones.update_one(
+        {"_id": ObjectId(peticion_id)},
+        {"$set": {"estado": "ejecutado", "archivo_id": str(archivo_id), "nombre_archivo": archivo.filename}},
+    )
+    return serializar_documento(db.peticiones.find_one({"_id": ObjectId(peticion_id)}))

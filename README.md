@@ -114,6 +114,18 @@ sudo apt install -y python3-picamera2 ffmpeg python3-pyside6.qtwidgets python3-p
 `raspberry_prueba/requirements.txt`. No instale Picamera2 con `pip`. Antes de
 abrir ANICAM compruebe la cámara con `rpicam-hello -t 3s`.
 
+## Backblaze B2 privado
+
+El backend usa B2 mediante `boto3`; la Raspberry guarda primero cada JPEG o MP4
+en su tarjeta SD y luego lo envía por HTTP a FastAPI. Solo FastAPI posee las
+variables `B2_DIRECCION_SERVICIO`, `B2_NOMBRE_DEPOSITO`, `B2_REGION`,
+`B2_IDENTIFICADOR_CLAVE` y `B2_CLAVE_SECRETA` de `backend/.env`. Complete esos
+valores directamente en ese archivo, sin subirlo a Git. B2 confirma la subida
+antes de que la petición pase a `ejecutado`; un fallo conserva el archivo local
+y registra la petición como error. Para visualizar, el Dashboard solicita al
+backend una URL prefirmada de cinco minutos: la URL no se guarda en MongoDB ni
+vuelve público el depósito.
+
 ## Problemas frecuentes
 
 | Situación | Qué comprobar |

@@ -21,8 +21,10 @@ from config import (
     TAMANO_FOTO,
     TASA_BITS_VIDEO,
     URL_BACKEND,
+    PIR_PIN_BCM, PIR_HABILITADO_LOCAL, INTERVALO_CONFIGURACION_PIR_MS,
 )
 from interfaz.ventana_principal import VentanaPrincipal
+from sensor.sensor_pir import SensorPIR
 
 
 def iniciar_aplicacion() -> int:
@@ -47,6 +49,9 @@ def iniciar_aplicacion() -> int:
     # La URL y el identificador se leen desde configuración para que el mismo
     # programa pueda instalarse en otras Raspberry sin editar esta función.
     cliente = ClienteBackend(URL_BACKEND)
+    # El pin pertenece a la instalación física; el comportamiento (tipo y
+    # cooldown) llega desde la configuración persistida de la cámara.
+    sensor = SensorPIR(PIR_PIN_BCM, lambda: ventana.movimiento_detectado.emit()) if PIR_HABILITADO_LOCAL else None
     # La ventana recibe los objetos ya preparados en vez de crearlos por dentro.
     # Así coordina el caso de uso (consultar y capturar), mientras cada objeto
     # conserva su especialidad y puede probarse de forma independiente.
@@ -56,7 +61,12 @@ def iniciar_aplicacion() -> int:
         cliente,
         INTERVALO_CONSULTA_MS,
         DURACION_VIDEO_SEGUNDOS,
+        sensor,
+        INTERVALO_CONFIGURACION_PIR_MS,
     )
+    # El callback se asigna después de crear Qt para cruzar de GPIO a la señal.
+    if sensor:
+        sensor.al_detectar = lambda: ventana.movimiento_detectado.emit()
     # Mostrar la ventana no bloquea: Qt comienza a atender sus eventos al
     # entrar en ``exec`` y termina cuando el usuario cierra la aplicación.
     ventana.show()

@@ -43,6 +43,14 @@ class Settings:
     MONGODB_TIMEOUT_MS: int = field(
         default_factory=lambda: _obtener_entero("MONGODB_TIMEOUT_MS", 5000)
     )
+    # B2 es opcional al arrancar: las credenciales se validan recién cuando una
+    # captura necesita la nube, de modo que una Raspberry pueda informar un error
+    # claro sin exponer secretos ni impedir diagnosticar FastAPI.
+    B2_DIRECCION_SERVICIO: str = field(default_factory=lambda: os.getenv("B2_DIRECCION_SERVICIO", ""))
+    B2_NOMBRE_DEPOSITO: str = field(default_factory=lambda: os.getenv("B2_NOMBRE_DEPOSITO", ""))
+    B2_REGION: str = field(default_factory=lambda: os.getenv("B2_REGION", ""))
+    B2_IDENTIFICADOR_CLAVE: str = field(default_factory=lambda: os.getenv("B2_IDENTIFICADOR_CLAVE", ""))
+    B2_CLAVE_SECRETA: str = field(default_factory=lambda: os.getenv("B2_CLAVE_SECRETA", ""))
 
     def __post_init__(self) -> None:
         if self.MONGODB_URI.rstrip("/") != "mongodb://localhost:27017":
@@ -54,6 +62,11 @@ class Settings:
             raise RuntimeError("MONGODB_DATABASE debe ser Ani_cam.")
         if self.MONGODB_TIMEOUT_MS <= 0:
             raise RuntimeError("MONGODB_TIMEOUT_MS debe ser mayor que cero.")
+
+    def b2_configurado(self) -> bool:
+        """Indica si están todos los valores necesarios sin revelar ninguno."""
+        return all((self.B2_DIRECCION_SERVICIO, self.B2_NOMBRE_DEPOSITO, self.B2_REGION,
+                    self.B2_IDENTIFICADOR_CLAVE, self.B2_CLAVE_SECRETA))
 
 
 # Instancia única importada por el resto del backend.

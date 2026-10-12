@@ -148,3 +148,27 @@ confirmarse ni corregirse sin reproducirla en el hardware; si ocurre, guarde la
 salida de consola y verifique en este orden: `ffmpeg -version`, los paquetes
 `python3-pyside6.qtmultimedia`, la reproducción externa del mismo MP4 y el
 formato/códec informado por `ffprobe archivo.mp4`.
+# Sensor PIR (Raspberry Pi 3 Model B+)
+
+ANICAM usa `gpiozero.MotionSensor`, instalado desde Raspberry Pi OS para mantener
+compatibilidad con el GPIO de la Pi 3 B+: `sudo apt update && sudo apt install -y
+python3-gpiozero`. No instale esta biblioteca desde Windows para la Raspberry.
+
+Conecte GND del PIR a GND de la Pi, aliméntelo según su módulo y conecte OUT a
+un GPIO libre compatible con **3,3 V**. Los GPIO no toleran una salida de 5 V;
+use un conversor de nivel si el PIR no entrega 3,3 V. No hay pin supuesto: antes
+de iniciar configure `PIR_PIN_BCM` con la numeración BCM del GPIO cableado y
+`PIR_HABILITADO_LOCAL=true`. Por ejemplo, no copie un número sin comprobar el
+diagrama físico de su instalación.
+
+El Dashboard guarda por cámara si el PIR está habilitado, el tipo (`foto` o
+`video`) y un cooldown de 3 a 3600 segundos. La Raspberry actualiza esa
+configuración cada 30 segundos. Una detección crea una petición de origen `pir`
+y reutiliza la captura en SD y la subida existente; el cooldown no limita las
+peticiones manuales. Si falta el PIR, el pin, GPIO Zero o la red, ANICAM informa
+el estado y mantiene disponibles las peticiones manuales.
+
+Prueba física: con el backend y la Raspberry iniciados, active el PIR para la
+cámara en el Dashboard, espere la actualización, genere movimiento y verifique
+una petición `pir`, el archivo en SD y su resultado. Desactive el PIR en el
+Dashboard para detener sólo las capturas automáticas.

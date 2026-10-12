@@ -15,7 +15,7 @@ from pathlib import Path
 
 # QtCore aporta temporizadores, URLs, constantes y el decorador Slot; QtGui
 # representa pixmaps y el evento nativo de cierre de una ventana.
-from PySide6.QtCore import Qt, QTimer, QUrl, Slot
+from PySide6.QtCore import Qt, QTimer, QUrl, Slot, Signal
 from PySide6.QtGui import QCloseEvent, QPixmap
 # Estos objetos separan la reproducción (QMediaPlayer), su salida audible y el
 # widget que presenta el video. Son APIs de PySide6, no clases propias.
@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
 from almacenamiento.gestor_archivos import GestorArchivos
 from camara.controlador_camara import ControladorCamara, ErrorCamara
 from comunicacion.cliente_backend import ClienteBackend, ErrorBackend
+from sensor.sensor_pir import SensorPIR, ErrorPIR
 
 
 class VentanaPrincipal(QMainWindow):
@@ -62,6 +63,8 @@ class VentanaPrincipal(QMainWindow):
         cliente: ClienteBackend,
         intervalo_consulta_ms: int,
         duracion_video_segundos: int,
+        sensor_pir: SensorPIR | None = None,
+        intervalo_configuracion_pir_ms: int = 30000,
     ) -> None:
         """Construye la ventana, conserva sus colaboradores y programa polling.
 
@@ -87,6 +90,9 @@ class VentanaPrincipal(QMainWindow):
         self.peticiones: list[dict] = []
         self.peticion_en_ejecucion: dict | None = None
         self.ruta_archivo_en_ejecucion: Path | None = None
+        self.sensor_pir = sensor_pir
+        self.configuracion_pir = {"pir_habilitado": False, "pir_tipo_captura": "foto", "pir_cooldown_segundos": 10}
+        self.ultimo_movimiento_ms = 0
         self.setWindowTitle("Cámara Trampa - Monitor Raspberry")
         self.resize(900, 570)
         # Primero se crean los widgets, luego se intenta abrir la cámara para
@@ -101,8 +107,42 @@ class VentanaPrincipal(QMainWindow):
         # de la interfaz, sin crear un ``while`` que la bloquee.
         self.temporizador.timeout.connect(self.consultar_peticiones)
         self.temporizador.start(intervalo_consulta_ms)
+        self.movimiento_detectado.connect(self._procesar_movimiento)
+        self.temporizador_pir = QTimer(self)
+        self.temporizador_pir.timeout.connect(self._actualizar_configuracion_pir)
+        self.temporizador_pir.start(intervalo_configuracion_pir_ms)
+        if self.sensor_pir:
+            try:
+                self.sensor_pir.iniciar()
+            except ErrorPIR as exc:
+                self.statusBar().showMessage(str(exc))
         # Se consulta una vez al arrancar para no esperar el primer intervalo.
         self.consultar_peticiones()
+        self._actualizar_configuracion_pir()
+
+    def _actualizar_configuracion_pir(self) -> None:
+        """Obtiene configuración por cámara; ante red caída conserva la última."""
+        try:
+            camara = self.cliente.obtener_camara(self.gestor.camara_id)
+            self.configuracion_pir = {clave: camara.get(clave, valor) for clave, valor in self.configuracion_pir.items()}
+        except ErrorBackend:
+            self.statusBar().showMessage("No se pudo actualizar la configuración PIR.")
+
+    @Slot()
+    def _procesar_movimiento(self) -> None:
+        """Aplica cooldown solo al PIR; nunca bloquea ni altera órdenes manuales."""
+        if not self.sensor_pir or not self.configuracion_pir["pir_habilitado"] or self.peticion_en_ejecucion:
+            return
+        from time import monotonic
+        actual = monotonic()
+        if actual - self.ultimo_movimiento_ms < self.configuracion_pir["pir_cooldown_segundos"]:
+            return
+        self.ultimo_movimiento_ms = actual
+        try:
+            peticion = self.cliente.crear_peticion_pir(self.gestor.camara_id, self.configuracion_pir["pir_tipo_captura"])
+            self._ejecutar_peticion(peticion)
+        except ErrorBackend as exc:
+            self.statusBar().showMessage(str(exc))
 
     def _crear_interfaz(self) -> None:
         """Crea widgets, layouts, señales y el visor de resultados locales.
@@ -281,29 +321,30 @@ class VentanaPrincipal(QMainWindow):
             self._finalizar_error(str(exc))
 
     def _finalizar_exito(self) -> None:
-        """Informa con PUT una captura terminada y actualiza el historial local.
-
-        La foto o el video ya existe en la tarjeta SD antes de este paso. PUT
-        actualiza únicamente su metadato remoto; una falla de red no borra el
-        archivo local ni detiene las próximas capturas.
-        """
+        """Envía a FastAPI una captura local válida para su subida privada a B2."""
         if not self.peticion_en_ejecucion or not self.ruta_archivo_en_ejecucion:
             return
         ruta = self.ruta_archivo_en_ejecucion
         try:
-            # La ruta absoluta se resuelve en la Raspberry, pero se comunica
-            # como metadato: FastAPI no lee ni transfiere el archivo de la SD.
-            respuesta = self.cliente.informar_resultado(
-                self.peticion_en_ejecucion["_id"],
-                "ejecutado",
-                ruta.name,
-                str(ruta.resolve()),
+            # La comprobación precede cualquier transferencia. El archivo queda
+            # conservado en SD; FastAPI recibe una copia y posee las claves B2.
+            if not ruta.is_file() or ruta.stat().st_size <= 0:
+                raise ErrorBackend("La captura local no existe o está vacía.")
+            respuesta = self.cliente.subir_archivo_capturado(
+                self.peticion_en_ejecucion["_id"], ruta
             )
         except ErrorBackend as exc:
-            # El archivo local es válido aunque no se haya podido notificar. Se
-            # conserva el detalle para que el usuario pueda diagnosticar la red.
+            # El archivo local no se borra. Se informa error para no presentar
+            # como ejecutada una captura cuya nube no fue confirmada.
             self.peticion_en_ejecucion["mensaje_error"] = str(exc)
             self.estado_backend.setText("Estado: captura local pendiente de informar")
+            try:
+                respuesta = self.cliente.informar_resultado(
+                    self.peticion_en_ejecucion["_id"], "error", mensaje_error=str(exc)
+                )
+                self._reemplazar_peticion(respuesta)
+            except ErrorBackend:
+                pass
         else:
             self._reemplazar_peticion(respuesta)
         self._limpiar_ejecucion()
@@ -498,4 +539,9 @@ class VentanaPrincipal(QMainWindow):
         self.reproductor.stop()
         self.cliente.cerrar()
         self.controlador.cerrar()
+        if self.sensor_pir:
+            self.sensor_pir.cerrar()
         evento.accept()
+    # GPIO Zero puede notificar desde otro hilo; Signal entrega el trabajo al
+    # ciclo Qt para no tocar cámara ni widgets desde el callback GPIO.
+    movimiento_detectado = Signal()

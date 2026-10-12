@@ -45,6 +45,14 @@ sudo apt install -y python3-picamera2 ffmpeg python3-pyside6.qtwidgets python3-p
 Picamera2 no debe instalarse con pip; se integra con libcamera mediante apt.
 Compruebe la cámara con: rpicam-hello -t 3s
 
+BACKBLAZE B2 PRIVADO
+Instalar dependencias del backend con: pip install -r requirements.txt.
+Completar únicamente en backend/.env: B2_DIRECCION_SERVICIO,
+B2_NOMBRE_DEPOSITO, B2_REGION, B2_IDENTIFICADOR_CLAVE y B2_CLAVE_SECRETA.
+La Raspberry guarda primero en SD y transmite el archivo a FastAPI; el backend
+sube a B2 y genera enlaces temporales al visualizar. Si B2 falla, el archivo
+local se conserva y la petición no queda ejecutada.
+
 PROBLEMAS FRECUENTES
 - Raspberry sin backend: revisar URL_BACKEND, IP, ping, puerto 8000, firewall y
   el comando completo de Uvicorn.

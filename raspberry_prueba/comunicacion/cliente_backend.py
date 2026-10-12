@@ -13,6 +13,7 @@ from __future__ import annotations
 # tiempos de espera y respuestas inválidas que la interfaz puede recuperar.
 import requests
 from requests.exceptions import RequestException
+from pathlib import Path
 
 
 class ErrorBackend(RuntimeError):
@@ -69,6 +70,14 @@ class ClienteBackend:
         """
         return self._solicitud("get", f"/peticiones/pendientes/{camara_id}")
 
+    def obtener_camara(self, camara_id: str) -> dict:
+        """Lee la configuración PIR persistida para esta cámara."""
+        return self._solicitud("get", f"/camaras/{camara_id}") or {}
+
+    def crear_peticion_pir(self, camara_id: str, tipo: str) -> dict:
+        """Reutiliza la ruta de peticiones para conservar SD, B2 e historial."""
+        return self._solicitud("post", "/peticiones", json={"camara_id": camara_id, "tipo": tipo, "origen": "pir"}) or {}
+
     def informar_resultado(
         self,
         peticion_id: str,
@@ -98,6 +107,38 @@ class ClienteBackend:
                 "mensaje_error": mensaje_error,
             },
         )
+
+    def subir_archivo_capturado(self, peticion_id: str, ruta: Path) -> dict:
+        """Envía a FastAPI un archivo que ya fue cerrado y validado en la SD.
+
+        Las credenciales B2 no viajan a la Raspberry: FastAPI recibe los bytes,
+        realiza la subida privada y solo responde éxito cuando la confirma.
+        """
+        if not ruta.is_file() or ruta.stat().st_size <= 0:
+            raise ErrorBackend("La captura local no existe o está vacía; no se subió.")
+        try:
+            with ruta.open("rb") as contenido:
+                respuesta = self.sesion.post(
+                    f"{self.url_base}/peticiones/{peticion_id}/archivo",
+                    files={"archivo": (ruta.name, contenido, "image/jpeg" if ruta.suffix.lower() in {".jpg", ".jpeg"} else "video/mp4")},
+                    timeout=max(self.tiempo_espera, 60),
+                )
+                respuesta.raise_for_status()
+                return respuesta.json()
+        except RequestException as exc:
+            raise ErrorBackend(self._mensaje_error(exc)) from exc
+
+    def _mensaje_error(self, error: RequestException) -> str:
+        """Reduce errores HTTP a un texto seguro para la interfaz de la cámara."""
+        respuesta = getattr(error, "response", None)
+        if respuesta is not None:
+            try:
+                detalle = respuesta.json().get("detail")
+                if detalle:
+                    return str(detalle)
+            except ValueError:
+                pass
+        return "No se pudo confirmar la subida en FastAPI."
 
     def _solicitud(self, metodo: str, ruta: str, **datos) -> dict | None:
         """Centraliza URL, tiempo de espera, JSON y conversión de errores.

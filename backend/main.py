@@ -10,6 +10,7 @@ from config.settings import settings
 from database.connection import cerrar_conexion, comprobar_conexion
 # Cada router agrupa endpoints de una parte concreta del sistema.
 from routers.autenticacion import router as autenticacion_router
+from routers.archivos import router as archivos_router
 from routers.basic import router as basic_router
 from routers.camaras import router as camaras_router
 from routers.eventos import router as eventos_router
@@ -43,6 +44,7 @@ app = FastAPI(
 # del MVP. Las rutas básicas quedan fuera para salud e información general.
 app.include_router(basic_router)
 app.include_router(autenticacion_router, prefix=settings.API_V1_PREFIX)
+app.include_router(archivos_router, prefix=settings.API_V1_PREFIX)
 app.include_router(camaras_router, prefix=settings.API_V1_PREFIX)
 app.include_router(peticiones_router, prefix=settings.API_V1_PREFIX)
 app.include_router(eventos_router, prefix=settings.API_V1_PREFIX)

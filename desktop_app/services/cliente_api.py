@@ -96,6 +96,19 @@ class ClienteApi:
         # Consulta un evento puntual existente en MongoDB para mostrar el detalle.
         return self._solicitud("get", f"/eventos/{evento_id}")
 
+    def listar_archivos_camara(self, camara_id: str) -> list[dict]:
+        return self._solicitud("get", f"/archivos/camara/{camara_id}")
+
+    def listar_archivos_peticion(self, peticion_id: str) -> list[dict]:
+        return self._solicitud("get", f"/archivos/peticion/{peticion_id}")
+
+    def listar_archivos_evento(self, evento_id: str) -> list[dict]:
+        return self._solicitud("get", f"/archivos/evento/{evento_id}")
+
+    def enlace_visualizacion(self, archivo_id: str) -> dict:
+        """Pide una URL B2 efímera solo al momento de abrir el archivo."""
+        return self._solicitud("get", f"/archivos/{archivo_id}/visualizacion")
+
     def _solicitud(self, metodo: str, ruta: str, **argumentos) -> dict | list:
         # Envuelve todas las llamadas HTTP para centralizar timeout, armado de URL
         # y traducción de errores a mensajes entendibles.

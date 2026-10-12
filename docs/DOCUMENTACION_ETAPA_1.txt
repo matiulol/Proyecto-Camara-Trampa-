@@ -18,6 +18,31 @@ con `Get-Service MongoDB` y, si está detenido, inícielo como administrador con
 `Start-Service MongoDB`. Al iniciar y en `GET /health`, FastAPI ejecuta un
 `ping`; si falla, informa una causa de configuración sin revelar la URI.
 
+## Almacenamiento privado en Backblaze B2
+
+La captura sigue este orden: Picamera2 escribe primero el JPEG o MP4 en la SD,
+la Raspberry confirma que existe y tiene contenido, y después lo transmite por
+HTTP a FastAPI. El backend, único proceso que conoce las credenciales B2, sube
+el flujo mediante `boto3`, registra `clave_b2`, `estado_subida=confirmada` y la
+relación con la petición en `Ani_cam.archivos`. La clave es determinista por
+petición para que un reintento no cree otro objeto. Si B2 no confirma la subida,
+no se crea disponibilidad en nube, la petición queda en error y el archivo SD
+no se elimina. Las rutas `GET /api/v1/archivos/...` consultan únicamente
+metadatos registrados; `/visualizacion` genera una URL prefirmada privada de
+cinco minutos, que nunca se persiste en MongoDB.
+
+## Sensor PIR por cámara
+
+La integración PIR está destinada a Raspberry Pi 3 Model B+ con Raspberry Pi
+OS y `python3-gpiozero`. El pin BCM es local a cada instalación (`PIR_PIN_BCM`)
+y nunca se presupone. La salida OUT del módulo debe ser compatible con 3,3 V;
+una señal de 5 V requiere adaptación antes de conectarse al GPIO. El Dashboard
+persiste por cámara `pir_habilitado`, `pir_tipo_captura` y un cooldown validado
+entre 3 y 3600 segundos. Al detectar movimiento, la Raspberry crea una petición
+existente de origen `pir` y sigue el mismo flujo de SD, FastAPI y B2. El callback
+GPIO se entrega al ciclo Qt para no bloquear la interfaz. Sin hardware o ante
+un error del sensor, las peticiones manuales continúan funcionando.
+
 ## 1. Propósito de esta etapa
 
 Esta etapa continúa el sistema existente sin reemplazar su arquitectura. El

@@ -57,6 +57,11 @@ class CamaraBase(BaseModel):
     ubicacion: str
     estado: str
     fecha_instalacion: str
+    # Estos valores viven por cámara en MongoDB para que el Dashboard configure
+    # el comportamiento PIR de cada Raspberry y sobrevivan reinicios.
+    pir_habilitado: bool = False
+    pir_tipo_captura: Literal["foto", "video"] = "foto"
+    pir_cooldown_segundos: int = Field(default=10, ge=3, le=3600)
 
     @field_validator("nombre", "ubicacion", "estado", "fecha_instalacion")
     @classmethod
@@ -79,6 +84,9 @@ class CamaraActualizar(BaseModel):
     ubicacion: str | None = None
     estado: str | None = None
     fecha_instalacion: str | None = None
+    pir_habilitado: bool | None = None
+    pir_tipo_captura: Literal["foto", "video"] | None = None
+    pir_cooldown_segundos: int | None = Field(default=None, ge=3, le=3600)
 
     @field_validator("nombre", "ubicacion", "estado", "fecha_instalacion")
     @classmethod
@@ -118,6 +126,7 @@ class PeticionCrear(BaseModel):
     # La fecha y el estado se completan en el backend para mantener consistencia.
     camara_id: str
     tipo: Literal["foto", "video"]
+    origen: Literal["manual", "pir"] = "manual"
 
     @field_validator("camara_id")
     @classmethod
@@ -157,6 +166,7 @@ class PeticionRespuesta(BaseModel):
     archivo_id: str | None = None
     nombre_archivo: str | None = None
     mensaje_error: str | None = None
+    origen: Literal["manual", "pir"] = "manual"
 
     model_config = ConfigDict(populate_by_name=True)
 
