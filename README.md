@@ -31,21 +31,20 @@ Raspberry Pi + Picamera2 ────┘
 
 El orden importa porque cada componente depende del anterior:
 
-1. **Configure MongoDB Atlas.** La base existente es `Ani_cam`; no cree ni
-   migre otra. Copie `backend/.env.example` como `backend/.env` y reemplace
-   únicamente `<NUEVA_CONTRASENA_URL_ENCODED>` por la contraseña nueva del
-   usuario `Anicam`, codificada para URL si contiene caracteres reservados.
-   Atlas debe permitir la IP de la PC en *Network Access* y el usuario debe
-   tener acceso a `Ani_cam`. `backend/.env` está ignorado por Git.
+1. **Inicie MongoDB local.** La base existente y obligatoria es `Ani_cam`; no
+   cree ni migre otra. Copie `backend/.env.example` como `backend/.env`.
+   Mantenga `MONGODB_URI=mongodb://localhost:27017`,
+   `MONGODB_DATABASE=Ani_cam` y `MONGODB_TIMEOUT_MS=5000`.
+   `backend/.env` está ignorado por Git.
 
    ```powershell
    cd backend
    Copy-Item .env.example .env
    ```
 
-   La aplicación usa `MONGODB_URI`, `MONGODB_DATABASE=Ani_cam` y
-   `MONGODB_TIMEOUT_MS`. Como respaldo, puede sustituir temporalmente
-   `MONGODB_URI` por `mongodb://localhost:27017`; no cambie la base.
+   En Windows, compruebe el servicio con `Get-Service MongoDB`; si está
+   detenido, ejecútelo como administrador con `Start-Service MongoDB`. También
+   puede verificar la conexión con `mongosh --host localhost --port 27017`.
 2. **Prepare e inicie el backend** desde `backend`. El entorno virtual aísla
    las bibliotecas Python del sistema:
 
@@ -61,9 +60,10 @@ El orden importa porque cada componente depende del anterior:
    `--host 0.0.0.0` escucha en todas las interfaces de la PC, `--port 8000`
    fija el puerto y `--reload` reinicia durante desarrollo. Pruebe
    `http://localhost:8000/health`: debe responder `{"status":"ok"}`. Si falla,
-   revise la URI de Atlas, la contraseña nueva, el acceso de red y que
-   `MONGODB_DATABASE` siga siendo `Ani_cam`. El backend hace `ping` a MongoDB
-   tanto al iniciar como en `/health`; los mensajes de error no imprimen la URI.
+   revise que el servicio local esté iniciado, que la URI sea
+   `mongodb://localhost:27017` y que `MONGODB_DATABASE` siga siendo `Ani_cam`.
+   El backend hace `ping` a MongoDB tanto al iniciar como en `/health`; los
+   mensajes de error no imprimen la URI.
 
    `uvicorn main:app --reload` usa la configuración predeterminada y puede dejar
    el servicio accesible solo desde la propia PC. Para una Raspberry remota use
@@ -120,7 +120,7 @@ abrir ANICAM compruebe la cámara con `rpicam-hello -t 3s`.
 | --- | --- |
 | La Raspberry no llega al backend | IP y `URL_BACKEND`, ping, FastAPI iniciado con `--host 0.0.0.0`, puerto 8000 y firewall de la PC. |
 | La PC funciona pero la Raspberry no | No use `localhost`: desde la Raspberry apunta a ella misma. Use la IPv4 de la PC. |
-| MongoDB no funciona | URI de Atlas válida en `backend/.env`, contraseña nueva codificada para URL, IP permitida en Atlas, `MONGODB_DATABASE=Ani_cam` y respuesta correcta de `/health`. |
+| MongoDB no funciona | Confirme `Get-Service MongoDB`, `MONGODB_URI=mongodb://localhost:27017`, `MONGODB_DATABASE=Ani_cam` y la respuesta de `/health`. |
 | No se instala una dependencia de cámara | Use `apt` para Picamera2, libcamera/`rpicam-*`, ffmpeg y los paquetes PySide6 de Raspberry Pi OS. |
 | Un MP4 no se reproduce | La aplicación informa el error sin cerrarse. Revise la sección «Reproducción de video» en la documentación técnica. |
 

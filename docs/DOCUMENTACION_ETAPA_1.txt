@@ -4,6 +4,20 @@ Fecha de actualización: 06-10-2026
 Proyecto: Cámara Trampa Inteligente para Reserva Natural
 Base de datos: Ani_cam
 
+## Configuración de MongoDB local
+
+FastAPI lee la conexión exclusivamente desde `backend/.env`. Copie
+`backend/.env.example` a `backend/.env` y mantenga
+`MONGODB_URI=mongodb://localhost:27017`, `MONGODB_DATABASE=Ani_cam` y
+`MONGODB_TIMEOUT_MS=5000`. ANICAM utiliza MongoDB local; no utiliza MongoDB
+Atlas ni crea ni migra otra base de datos.
+
+`backend/.env` está excluido de Git. No coloque URI ni credenciales en código,
+documentación, respuestas HTTP o registros. En Windows, compruebe el servicio
+con `Get-Service MongoDB` y, si está detenido, inícielo como administrador con
+`Start-Service MongoDB`. Al iniciar y en `GET /health`, FastAPI ejecuta un
+`ping`; si falla, informa una causa de configuración sin revelar la URI.
+
 ## 1. Propósito de esta etapa
 
 Esta etapa continúa el sistema existente sin reemplazar su arquitectura. El

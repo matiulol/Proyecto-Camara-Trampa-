@@ -52,8 +52,8 @@ def comprobar_conexion() -> None:
         # No se propaga el error original: algunos controladores incluyen la URI
         # configurada y nunca debe aparecer una contraseña en logs o respuestas.
         raise RuntimeError(
-            "No se pudo conectar a MongoDB. Verifique MONGODB_URI, el acceso de red "
-            "a Atlas, el usuario de base de datos y que MONGODB_DATABASE sea Ani_cam."
+            "No se pudo conectar a MongoDB local. Verifique que el servicio esté "
+            "iniciado en localhost:27017 y que MONGODB_DATABASE sea Ani_cam."
         ) from None
 
 

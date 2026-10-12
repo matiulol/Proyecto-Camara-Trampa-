@@ -31,8 +31,8 @@ class Settings:
         "API para login, camaras, peticiones y eventos de una reserva natural."
     )
     API_V1_PREFIX: str = "/api/v1"
-    # Si no existe .env, se conserva MongoDB local como respaldo de desarrollo.
-    # Para Atlas, MONGODB_URI debe ser una URI mongodb+srv:// completa.
+    # ANICAM utiliza exclusivamente MongoDB local. La validación posterior evita
+    # que una variable de entorno heredada conecte accidentalmente a Atlas.
     MONGODB_URI: str = field(
         default_factory=lambda: os.getenv("MONGODB_URI", "mongodb://localhost:27017")
     )
@@ -45,8 +45,11 @@ class Settings:
     )
 
     def __post_init__(self) -> None:
-        if not self.MONGODB_URI.strip():
-            raise RuntimeError("MONGODB_URI no puede estar vacía.")
+        if self.MONGODB_URI.rstrip("/") != "mongodb://localhost:27017":
+            raise RuntimeError(
+                "MONGODB_URI debe apuntar a mongodb://localhost:27017 para usar "
+                "la instancia local de ANICAM."
+            )
         if self.MONGODB_DATABASE != "Ani_cam":
             raise RuntimeError("MONGODB_DATABASE debe ser Ani_cam.")
         if self.MONGODB_TIMEOUT_MS <= 0:

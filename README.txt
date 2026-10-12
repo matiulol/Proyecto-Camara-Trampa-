@@ -7,10 +7,14 @@ la petición por HTTP, captura el archivo en su tarjeta SD e informa el resultad
 al backend. FastAPI es el único componente que usa MongoDB.
 
 Base de datos obligatoria: Ani_cam
-URI actual: mongodb://localhost:27017/Ani_cam
+Conexión local: MONGODB_URI=mongodb://localhost:27017 en backend/.env.
 
 ORDEN DE INICIO
-1. Iniciar MongoDB y comprobar que responde (por ejemplo con mongosh).
+1. Iniciar MongoDB local. En backend, copiar .env.example como .env y mantener
+   MONGODB_URI=mongodb://localhost:27017,
+   MONGODB_DATABASE=Ani_cam y MONGODB_TIMEOUT_MS=5000. .env está ignorado por
+   Git. En Windows, comprobar el servicio con Get-Service MongoDB e iniciarlo
+   como administrador con Start-Service MongoDB si está detenido.
 2. En backend instalar dependencias y ejecutar:
 
    uvicorn main:app --host 0.0.0.0 --port 8000 --reload
@@ -44,7 +48,8 @@ Compruebe la cámara con: rpicam-hello -t 3s
 PROBLEMAS FRECUENTES
 - Raspberry sin backend: revisar URL_BACKEND, IP, ping, puerto 8000, firewall y
   el comando completo de Uvicorn.
-- MongoDB: confirmar que el servicio esté iniciado y que la base sea Ani_cam.
+- MongoDB: confirmar que el servicio local está iniciado, que
+  MONGODB_URI=mongodb://localhost:27017 y que la base sea Ani_cam.
 - Video: si Qt Multimedia no puede decodificar un MP4, ANICAM muestra el error
   y sigue abierta. Revisar las dependencias multimedia de Raspberry Pi OS.
 
