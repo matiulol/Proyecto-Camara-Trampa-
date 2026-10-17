@@ -44,6 +44,6 @@ TAMANO_FOTO = (1920, 1080)
 TASA_BITS_VIDEO = 10_000_000
 # El pin BCM no se presupone: debe coincidir con el cable OUT del PIR. Al quedar
 # vacío el sensor no se inicializa y las capturas manuales continúan disponibles.
-PIR_PIN_BCM = os.getenv("PIR_PIN_BCM", "").strip()
-PIR_HABILITADO_LOCAL = os.getenv("PIR_HABILITADO_LOCAL", "false").lower() == "true"
+PIR_PIN_BCM = os.getenv("PIR_PIN_BCM", "17").strip()
+PIR_HABILITADO_LOCAL = os.getenv("PIR_HABILITADO_LOCAL", "true").lower() == "true"
 INTERVALO_CONFIGURACION_PIR_MS = int(os.getenv("INTERVALO_CONFIGURACION_PIR_MS", "30000"))

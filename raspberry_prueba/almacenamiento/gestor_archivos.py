@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from stat import S_ISREG
 
 
 @dataclass(frozen=True)
@@ -132,26 +133,43 @@ class GestorArchivos:
         para mostrar primero la captura más reciente.
         """
         self.crear_estructura()
-        archivos: list[ArchivoCaptura] = []
+        # Se conserva la marca de tiempo usada para mostrar cada archivo. Así
+        # no se vuelve a ejecutar ``stat`` durante el ordenamiento, algo que se
+        # nota al acumular capturas en una tarjeta SD de rendimiento limitado.
+        archivos_con_marca: list[tuple[float, ArchivoCaptura]] = []
 
         # El mismo recorrido sirve para ambos formatos porque cada elemento se
         # normaliza como ArchivoCaptura antes de llegar a la interfaz.
         for directorio, tipo in ((self.directorio_fotos, "Foto"), (self.directorio_videos, "Video")):
             for ruta in directorio.iterdir():
-                if ruta.is_file():
-                    # ``st_mtime`` es la fecha de última modificación del
-                    # archivo físico. Se convierte a fecha/hora legible sólo
-                    # para mostrarla, sin modificar el archivo ni MongoDB.
-                    fecha_hora = datetime.fromtimestamp(ruta.stat().st_mtime)
-                    archivos.append(
+                try:
+                    estado = ruta.stat()
+                except OSError:
+                    # La cámara u otro proceso puede eliminar una captura entre
+                    # el listado del directorio y esta consulta. Omitir sólo
+                    # esa entrada evita que la interfaz deje de actualizarse.
+                    continue
+                if not S_ISREG(estado.st_mode):
+                    continue
+                # ``st_mtime`` es la fecha de última modificación del archivo
+                # físico. Se convierte a fecha/hora legible sólo para mostrarla,
+                # sin modificar el archivo ni MongoDB.
+                fecha_hora = datetime.fromtimestamp(estado.st_mtime)
+                archivos_con_marca.append(
+                    (
+                        estado.st_mtime,
                         ArchivoCaptura(
                             ruta=ruta,
                             tipo=tipo,
                             fecha=fecha_hora.strftime("%d/%m/%Y"),
                             hora=fecha_hora.strftime("%H:%M:%S"),
-                        )
+                        ),
                     )
+                )
 
         # ``reverse=True`` coloca primero las capturas más recientes, que son
         # normalmente las que el usuario necesita revisar al abrir la pantalla.
-        return sorted(archivos, key=lambda archivo: archivo.ruta.stat().st_mtime, reverse=True)
+        return [
+            archivo
+            for _marca, archivo in sorted(archivos_con_marca, key=lambda elemento: elemento[0], reverse=True)
+        ]

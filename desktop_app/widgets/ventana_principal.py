@@ -1,6 +1,9 @@
 # Qt aporta constantes de alineación y roles para guardar datos en las tablas.
-from PySide6.QtCore import Qt, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import QObject, QRunnable, QSignalBlocker, QThreadPool, QTimer, Qt, QUrl, Signal, Slot
+from PySide6.QtGui import QCloseEvent, QDesktopServices, QPixmap
+from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+from PySide6.QtMultimediaWidgets import QVideoWidget
+from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 # Widgets de PySide6 usados para construir login, pestañas, formularios,
 # tablas y mensajes del dashboard.
 from PySide6.QtWidgets import (
@@ -10,12 +13,15 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSplitter,
+    QSlider,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -27,6 +33,234 @@ from PySide6.QtWidgets import (
 # ClienteApi concentra las llamadas HTTP a FastAPI y ErrorApi representa errores
 # listos para mostrar en mensajes de la interfaz.
 from services.cliente_api import ClienteApi, ErrorApi
+
+
+class SenalesConsultaPeticiones(QObject):
+    """Transporta al hilo visual el resultado de una consulta HTTP en segundo plano.
+
+    ``QRunnable`` no es un ``QObject`` y por ello no expone señales propias. Este
+    objeto separa el trabajo de red del widget: Qt entrega las señales al hilo de
+    la interfaz, que es el único autorizado a modificar la tabla.
+    """
+
+    completada = Signal(list)
+    fallida = Signal(str)
+
+
+class ConsultaPeticiones(QRunnable):
+    """Ejecuta el GET existente de peticiones fuera del ciclo visual de Qt."""
+
+    def __init__(self, url_base: str, tiempo_espera: int) -> None:
+        super().__init__()
+        self.url_base = url_base
+        self.tiempo_espera = tiempo_espera
+        self.senales = SenalesConsultaPeticiones()
+
+    @Slot()
+    def run(self) -> None:
+        """Consulta FastAPI sin bloquear botones, redibujado ni reproducción."""
+        cliente = ClienteApi(self.url_base, self.tiempo_espera)
+        try:
+            self.senales.completada.emit(cliente.listar_peticiones())
+        except ErrorApi as exc:
+            self.senales.fallida.emit(str(exc))
+        finally:
+            # La sesión pertenece exclusivamente a esta tarea de trabajo; cerrar
+            # su conexión no altera la sesión HTTP utilizada por otros controles.
+            cliente.sesion.close()
+
+
+def clasificar_archivo_multimedia(archivo: dict, peticion: dict) -> str | None:
+    """Normaliza los metadatos de archivo sin alterar los valores del backend.
+
+    Las peticiones conservan ``foto`` y ``video``, pero el endpoint de carga
+    guarda los archivos confirmados como ``imagen`` o ``video`` y agrega su MIME.
+    Considerar ambos contratos, además de la extensión, evita que una captura
+    JPEG válida sea descartada por una diferencia de vocabulario.
+    """
+    tipo = str(archivo.get("tipo") or peticion.get("tipo") or "").lower()
+    contenido = str(archivo.get("tipo_contenido") or "").lower()
+    nombre = str(archivo.get("nombre_archivo") or peticion.get("nombre_archivo") or "").lower()
+    extension = nombre.rsplit(".", 1)[-1] if "." in nombre else ""
+    if tipo in {"foto", "fotografía", "fotografia", "imagen"} or contenido.startswith("image/") or extension in {"jpg", "jpeg", "png"}:
+        return "imagen"
+    if tipo == "video" or contenido.startswith("video/") or extension == "mp4":
+        return "video"
+    return None
+
+
+def decodificar_imagen(contenido: bytes) -> QPixmap | None:
+    """Crea un ``QPixmap`` desde bytes descargados sin escribir archivos locales."""
+    imagen = QPixmap()
+    return imagen if imagen.loadFromData(contenido) else None
+
+
+def origen_archivo(archivo: dict) -> str:
+    """Devuelve el origen sólo cuando MongoDB guarda una relación inequívoca.
+
+    ``id_camara`` identifica dónde se consulta un archivo, no qué flujo lo
+    generó. Por eso el origen se determina exclusivamente a partir de
+    ``peticion_id`` o ``id_evento`` y nunca a partir del nombre del archivo.
+    """
+    tiene_peticion = bool(archivo.get("peticion_id"))
+    tiene_evento = bool(archivo.get("id_evento"))
+    if tiene_peticion and not tiene_evento:
+        return "Petición"
+    if tiene_evento and not tiene_peticion:
+        return "Evento"
+    return "Desconocido"
+
+
+def fecha_archivo(archivo: dict) -> str:
+    """Obtiene la primera fecha real disponible sin completar datos ausentes."""
+    for campo in ("fecha_hora", "fecha_captura", "fecha_creacion", "created_at"):
+        if archivo.get(campo):
+            return str(archivo[campo])
+    return "No disponible"
+
+
+class VisorMultimedia(QWidget):
+    """Visor lateral reutilizable con estado y red propios por sección."""
+
+    def __init__(self, mensaje_inicial: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._url_visualizacion_actual: QUrl | None = None
+
+        self.imagen = QLabel(mensaje_inicial)
+        self.imagen.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.imagen.setMinimumWidth(260)
+        self.imagen.setStyleSheet("border: 1px solid #b8c4bd;")
+
+        self.video = QVideoWidget()
+        self.video.hide()
+        self.reproductor = QMediaPlayer(self)
+        self.audio = QAudioOutput(self)
+        self.audio.setVolume(0.5)
+        self.reproductor.setAudioOutput(self.audio)
+        self.reproductor.setVideoOutput(self.video)
+        self.reproductor.errorOccurred.connect(self._manejar_error)
+
+        self.red = QNetworkAccessManager(self)
+        self.red.finished.connect(self._cargar_imagen_recibida)
+
+        self.boton_abrir_navegador = QPushButton("Abrir en navegador")
+        self.boton_abrir_navegador.setEnabled(False)
+        self.boton_abrir_navegador.clicked.connect(self.abrir_en_navegador)
+        self.boton_reproducir = QPushButton("Reproducir")
+        self.boton_pausar = QPushButton("Pausar")
+        self.volumen = QSlider(Qt.Orientation.Horizontal)
+        self.volumen.setRange(0, 100)
+        self.volumen.setValue(50)
+        self.boton_reproducir.clicked.connect(self.reproductor.play)
+        self.boton_pausar.clicked.connect(self.reproductor.pause)
+        self.volumen.valueChanged.connect(lambda valor: self.audio.setVolume(valor / 100))
+        self._actualizar_controles_video(False)
+
+        distribucion = QVBoxLayout(self)
+        distribucion.setContentsMargins(0, 0, 0, 0)
+        distribucion.addWidget(self.imagen)
+        distribucion.addWidget(self.video)
+        controles_video = QHBoxLayout()
+        controles_video.addWidget(self.boton_reproducir)
+        controles_video.addWidget(self.boton_pausar)
+        controles_video.addWidget(QLabel("Volumen"))
+        controles_video.addWidget(self.volumen)
+        distribucion.addLayout(controles_video)
+        distribucion.addWidget(self.boton_abrir_navegador)
+
+    def presentar(self, archivo: dict, peticion: dict, respuesta: dict) -> None:
+        """Carga la URL temporal en esta instancia, sin afectar otros visores."""
+        tipo = clasificar_archivo_multimedia(archivo, peticion)
+        enlace = QUrl(str(respuesta.get("url", "")))
+        if not enlace.isValid() or enlace.scheme() not in {"http", "https"}:
+            self.reiniciar("El enlace temporal del archivo no está disponible.")
+            return
+
+        self._url_visualizacion_actual = enlace
+        self.boton_abrir_navegador.setEnabled(True)
+        self.reproductor.stop()
+        if tipo == "imagen":
+            self._actualizar_controles_video(False)
+            self.video.hide()
+            self.imagen.show()
+            self.imagen.setPixmap(QPixmap())
+            self.imagen.setText("Cargando fotografía…")
+            self.red.get(QNetworkRequest(enlace))
+        elif tipo == "video":
+            self._actualizar_controles_video(True)
+            self.imagen.hide()
+            self.video.show()
+            self.reproductor.setSource(enlace)
+            self.reproductor.play()
+        else:
+            self.mostrar_mensaje("El tipo de archivo seleccionado no se puede visualizar.")
+
+    @Slot(QNetworkReply)
+    def _cargar_imagen_recibida(self, respuesta: QNetworkReply) -> None:
+        """Convierte la respuesta asíncrona en una imagen proporcional."""
+        # Una descarga anterior puede terminar después de que el usuario eligió
+        # otro archivo. Cada visor conserva su propia URL; ignorar respuestas
+        # que ya no coinciden impide que una imagen vieja reemplace la actual.
+        if respuesta.url() != self._url_visualizacion_actual:
+            respuesta.deleteLater()
+            return
+        if respuesta.error() != QNetworkReply.NetworkError.NoError:
+            codigo_http = respuesta.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
+            mensaje = (
+                "La URL temporal de la fotografía venció o no autoriza el acceso."
+                if codigo_http in {401, 403}
+                else "No se pudo cargar la fotografía seleccionada."
+            )
+            self.mostrar_mensaje(mensaje)
+            respuesta.deleteLater()
+            return
+
+        imagen = decodificar_imagen(bytes(respuesta.readAll()))
+        if imagen is None:
+            self.mostrar_mensaje("El archivo seleccionado no es una fotografía válida.")
+        else:
+            self.imagen.setPixmap(
+                imagen.scaled(
+                    self.imagen.size(),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+        respuesta.deleteLater()
+
+    @Slot(QMediaPlayer.Error, str)
+    def _manejar_error(self, _error: QMediaPlayer.Error, detalle: str) -> None:
+        """Informa fallos de URL, códec o backend dentro del visor."""
+        self.reproductor.stop()
+        mensaje = "No se pudo reproducir el video seleccionado."
+        if detalle or self.reproductor.errorString():
+            mensaje += " Comprueba que la URL temporal siga vigente y que Qt Multimedia admita el códec MP4."
+        self.mostrar_mensaje(mensaje)
+
+    def _actualizar_controles_video(self, habilitados: bool) -> None:
+        self.boton_reproducir.setEnabled(habilitados)
+        self.boton_pausar.setEnabled(habilitados)
+        self.volumen.setEnabled(habilitados)
+
+    def abrir_en_navegador(self) -> None:
+        """Abre exclusivamente el enlace temporal ya presentado por esta instancia."""
+        if self._url_visualizacion_actual and not QDesktopServices.openUrl(self._url_visualizacion_actual):
+            self.mostrar_mensaje("No se pudo abrir el archivo en el navegador.")
+
+    def reiniciar(self, mensaje: str) -> None:
+        """Olvida el archivo actual antes de cambiar el contexto de la tabla."""
+        self._url_visualizacion_actual = None
+        self.boton_abrir_navegador.setEnabled(False)
+        self.mostrar_mensaje(mensaje)
+
+    def mostrar_mensaje(self, mensaje: str) -> None:
+        """Restablece el visor a un estado seguro y legible."""
+        self.reproductor.stop()
+        self._actualizar_controles_video(False)
+        self.video.hide()
+        self.imagen.show()
+        self.imagen.setPixmap(QPixmap())
+        self.imagen.setText(mensaje)
 
 
 class VentanaPrincipal(QMainWindow):
@@ -42,7 +276,14 @@ class VentanaPrincipal(QMainWindow):
         self.camaras: list[dict] = []
         self.peticiones: list[dict] = []
         self.eventos: list[dict] = []
-        self.setWindowTitle("Cámara Trampa Inteligente")
+        # Un único trabajo en curso evita acumular GET si FastAPI tarda más que
+        # el intervalo. El temporizador sólo programa consultas: nunca realiza
+        # la operación HTTP dentro del hilo que dibuja la ventana.
+        self._consulta_peticiones_activa = False
+        self._ultimo_error_peticiones = ""
+        self._pool_consultas = QThreadPool.globalInstance()
+        self._dashboard_activo = False
+        self.setWindowTitle("AniCAM")
         self.setMinimumSize(1040, 660)
         self._mostrar_login()
 
@@ -53,7 +294,7 @@ class VentanaPrincipal(QMainWindow):
         layout = QVBoxLayout(pantalla)
         layout.setContentsMargins(80, 80, 80, 80)
 
-        title = QLabel("Cámara Trampa Inteligente")
+        title = QLabel("AniCAM")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet("font-size: 24px; font-weight: bold;")
 
@@ -118,11 +359,19 @@ class VentanaPrincipal(QMainWindow):
         self.tabs.addTab(self._crear_tab_eventos(), "Eventos")
         layout.addWidget(self.tabs)
         self.setCentralWidget(contenedor)
+        self._dashboard_activo = True
         self.refrescar_todo()
+        # Cinco segundos mantiene el historial actualizado sin generar tráfico
+        # excesivo. El mecanismo reutiliza ``listar_peticiones`` y los endpoints
+        # existentes; no consulta directamente a la Raspberry ni a MongoDB.
+        self.temporizador_peticiones = QTimer(self)
+        self.temporizador_peticiones.setInterval(5000)
+        self.temporizador_peticiones.timeout.connect(self.refrescar_peticiones)
+        self.temporizador_peticiones.start()
 
     def _crear_tab_camaras(self) -> QWidget:
-        # Pestaña de administración de cámaras. Se conserva el CRUD que ya existía
-        # porque las peticiones dependen de seleccionar cámaras registradas.
+        # Se conserva el CRUD existente y, debajo, se consulta el historial real
+        # de la cámara elegida sin abrir selectores ni visores emergentes.
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
@@ -141,20 +390,57 @@ class VentanaPrincipal(QMainWindow):
             botones.addWidget(boton)
         botones.addStretch()
 
-        self.tabla_camaras = QTableWidget(0, 6)
+        self.tabla_camaras = QTableWidget(0, 5)
         self.tabla_camaras.setHorizontalHeaderLabels(
-            ["ID", "Nombre", "Ubicación", "Estado", "Fecha de instalación", "Archivos"]
+            ["ID", "Nombre", "Ubicación", "Estado", "Fecha de instalación"]
         )
         self._configurar_tabla(self.tabla_camaras)
+        self.tabla_camaras.itemSelectionChanged.connect(self._cargar_archivos_camara_seleccionada)
+
+        self.estado_archivos_camara_label = QLabel(
+            "Selecciona una cámara para consultar sus archivos."
+        )
+        self.tabla_archivos_camara = QTableWidget(0, 6)
+        self.tabla_archivos_camara.setHorizontalHeaderLabels(
+            ["Nombre", "Tipo", "Fecha", "Origen", "Estado", "Visualizar"]
+        )
+        self._configurar_tabla(self.tabla_archivos_camara)
+        self.tabla_archivos_camara.setMinimumWidth(620)
+        self.archivos_camara: list[dict] = []
+        self._camara_archivos_id: str | None = None
+
+        # Es una instancia independiente del mismo componente usado en
+        # Peticiones: una visualización aquí no cambia el estado de los demás.
+        self.visor_multimedia_camaras = VisorMultimedia(
+            "Selecciona un archivo y presiona «Visualizar».", self
+        )
+        self.visor_camaras = self.visor_multimedia_camaras.imagen
+
+        panel_archivos = QSplitter(Qt.Orientation.Horizontal)
+        panel_archivos.addWidget(self.tabla_archivos_camara)
+        panel_archivos.addWidget(self.visor_multimedia_camaras)
+        # Recalcular tablas y visores de multimedia en cada píxel hacía pesado
+        # el arrastre. El divisor se mueve con una guía y aplica el tamaño final
+        # al soltarlo, sin interferir con las actualizaciones de datos.
+        panel_archivos.setOpaqueResize(False)
+        panel_archivos.setStretchFactor(0, 0)
+        panel_archivos.setStretchFactor(1, 1)
+        panel_archivos.setCollapsible(0, False)
+        panel_archivos.setCollapsible(1, False)
 
         layout.addLayout(botones)
         layout.addWidget(self.tabla_camaras)
+        layout.addWidget(self.estado_archivos_camara_label)
+        layout.addWidget(panel_archivos, 1)
         return tab
 
     def _crear_tab_peticiones(self) -> QWidget:
         # La petición se crea en FastAPI; luego una Raspberry asociada la obtiene
         # por polling. El Dashboard no se comunica directamente con la cámara.
         tab = QWidget()
+        # La referencia identifica la pestaña de Peticiones para su propio
+        # visor lateral; Eventos conserva una instancia y contexto distintos.
+        self.tab_peticiones = tab
         layout = QVBoxLayout(tab)
 
         seleccion = QHBoxLayout()
@@ -184,17 +470,47 @@ class VentanaPrincipal(QMainWindow):
             ["ID", "Cámara", "Tipo", "Estado", "Fecha y hora", "Resultado", "Visualizar"]
         )
         self._configurar_tabla(self.tabla_peticiones)
+        self.tabla_peticiones.setMinimumWidth(700)
+
+        # Esta instancia comparte la implementación con Cámaras, pero conserva
+        # su propia URL, reproductor, descarga y controles.
+        self.visor_multimedia_peticiones = VisorMultimedia(
+            "Selecciona una petición para ver su archivo.", self
+        )
+        # Alias de compatibilidad para los controles ya existentes de Peticiones.
+        self.visor_peticiones = self.visor_multimedia_peticiones.imagen
+        self.video_peticiones = self.visor_multimedia_peticiones.video
+        self.reproductor_peticiones = self.visor_multimedia_peticiones.reproductor
+        self.audio_peticiones = self.visor_multimedia_peticiones.audio
+        self.red_multimedia = self.visor_multimedia_peticiones.red
+        self.boton_abrir_navegador = self.visor_multimedia_peticiones.boton_abrir_navegador
+        self.boton_reproducir = self.visor_multimedia_peticiones.boton_reproducir
+        self.boton_pausar = self.visor_multimedia_peticiones.boton_pausar
+        self.volumen_peticiones = self.visor_multimedia_peticiones.volumen
+
+        panel = QSplitter(Qt.Orientation.Horizontal)
+        panel.addWidget(self.tabla_peticiones)
+        panel.addWidget(self.visor_multimedia_peticiones)
+        panel.setOpaqueResize(False)
+        panel.setStretchFactor(0, 0)
+        panel.setStretchFactor(1, 1)
+        panel.setCollapsible(0, False)
+        panel.setCollapsible(1, False)
 
         layout.addLayout(seleccion)
         layout.addLayout(botones)
         layout.addWidget(self.estado_peticiones_label)
-        layout.addWidget(self.tabla_peticiones)
+        layout.addWidget(panel, 1)
+        # La selección queda disponible para consultar datos, pero no se conecta
+        # al visor: descargar o reproducir una captura requiere el botón
+        # ``Visualizar`` de la fila de forma explícita.
         return tab
 
     def _crear_tab_eventos(self) -> QWidget:
         # Los eventos quedan como historial visual de solo lectura. La interfaz
         # ya no ofrece botones para crear, editar ni eliminar documentos.
         tab = QWidget()
+        self.tab_eventos = tab
         layout = QVBoxLayout(tab)
 
         botones = QHBoxLayout()
@@ -213,9 +529,25 @@ class VentanaPrincipal(QMainWindow):
         )
         self._configurar_tabla(self.tabla_eventos)
 
+        # Eventos reutiliza el componente multimedia, pero esta instancia tiene
+        # su propia URL, red y reproductor. No comparte selección ni estado con
+        # la pestaña de Peticiones.
+        self.visor_multimedia_eventos = VisorMultimedia(
+            "Selecciona un evento y presiona «Visualizar».", self
+        )
+        self.visor_eventos = self.visor_multimedia_eventos.imagen
+        panel = QSplitter(Qt.Orientation.Horizontal)
+        panel.addWidget(self.tabla_eventos)
+        panel.addWidget(self.visor_multimedia_eventos)
+        panel.setOpaqueResize(False)
+        panel.setStretchFactor(0, 0)
+        panel.setStretchFactor(1, 1)
+        panel.setCollapsible(0, False)
+        panel.setCollapsible(1, False)
+
         layout.addLayout(botones)
         layout.addWidget(self.estado_eventos_label)
-        layout.addWidget(self.tabla_eventos)
+        layout.addWidget(panel, 1)
         return tab
 
     def _configurar_tabla(self, tabla: QTableWidget) -> None:
@@ -224,7 +556,12 @@ class VentanaPrincipal(QMainWindow):
         tabla.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         tabla.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         tabla.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        tabla.horizontalHeader().setStretchLastSection(True)
+        # Los anchos son una decisión del usuario durante la sesión. ``Stretch``
+        # y ``resizeColumnsToContents`` los sobrescribían al redimensionar o al
+        # actualizar datos; Interactive conserva el ajuste manual.
+        encabezado = tabla.horizontalHeader()
+        encabezado.setStretchLastSection(False)
+        encabezado.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
 
     def refrescar_todo(self) -> None:
         # Carga las tres áreas del dashboard. Primero cámaras, porque peticiones y
@@ -252,33 +589,173 @@ class VentanaPrincipal(QMainWindow):
                 camara.get("fecha_instalacion", ""),
             ]
             self._llenar_fila(self.tabla_camaras, fila, valores, camara)
-            self._boton_archivos(self.tabla_camaras, fila, 5, "camara", camara.get("_id", ""), True)
         self._actualizar_selector_peticiones()
 
-    def refrescar_peticiones(self) -> None:
-        # Consulta el historial actualizado. El resultado ahora refleja la respuesta
-        # que la Raspberry informó a FastAPI, sin comunicarse con ella directamente.
-        try:
-            self.peticiones = self.api.listar_peticiones()
-        except ErrorApi as exc:
-            QMessageBox.warning(self, "Peticiones", str(exc))
+    def _cargar_archivos_camara_seleccionada(self) -> None:
+        """Consulta los metadatos de la cámara marcada, sin pedir URLs B2."""
+        camara = self._camara_seleccionada()
+        if not camara:
+            return
+        camara_id = str(camara.get("_id", ""))
+        if not camara_id:
             return
 
-        nombres_camaras = self._nombres_camaras_por_id()
-        self.tabla_peticiones.setRowCount(len(self.peticiones))
-        for fila, peticion in enumerate(self.peticiones):
-            camara_id = peticion.get("camara_id", "")
+        # Cambiar de cámara nunca abre ni descarga un archivo automáticamente.
+        self._camara_archivos_id = camara_id
+        self.visor_multimedia_camaras.reiniciar(
+            "Selecciona un archivo y presiona «Visualizar»."
+        )
+        try:
+            self.archivos_camara = self.api.listar_archivos_camara(camara_id)
+        except ErrorApi:
+            self.archivos_camara = []
+            self.tabla_archivos_camara.setRowCount(0)
+            self.estado_archivos_camara_label.setText(
+                "No se pudieron consultar los archivos de la cámara seleccionada."
+            )
+            return
+
+        self._sincronizar_tabla_archivos_camara()
+
+    def _sincronizar_tabla_archivos_camara(self) -> None:
+        """Presenta exactamente los metadatos disponibles en ``archivos``."""
+        self.tabla_archivos_camara.setRowCount(len(self.archivos_camara))
+        for fila, archivo in enumerate(self.archivos_camara):
+            tipo = clasificar_archivo_multimedia(archivo, {}) or "Desconocido"
             valores = [
-                peticion.get("_id", ""),
-                self._camara_visible(camara_id, nombres_camaras),
-                peticion.get("tipo", ""),
-                peticion.get("estado", ""),
-                peticion.get("fecha_hora", ""),
-                peticion.get("nombre_archivo") or peticion.get("mensaje_error", ""),
+                archivo.get("nombre_archivo") or "No disponible",
+                tipo.capitalize(),
+                fecha_archivo(archivo),
+                origen_archivo(archivo),
+                archivo.get("estado_subida") or archivo.get("estado") or "No disponible",
             ]
-            self._llenar_fila(self.tabla_peticiones, fila, valores, peticion)
-            disponible = peticion.get("estado") == "ejecutado" and bool(peticion.get("archivo_id"))
-            self._boton_archivos(self.tabla_peticiones, fila, 6, "peticion", peticion.get("_id", ""), disponible)
+            self._llenar_fila(self.tabla_archivos_camara, fila, valores, archivo)
+            disponible = bool(archivo.get("_id"))
+            self._boton_visualizar_archivo_camara(
+                fila, archivo, disponible
+            )
+
+        if self.archivos_camara:
+            self.estado_archivos_camara_label.setText("")
+        else:
+            self.estado_archivos_camara_label.setText(
+                "La cámara seleccionada no tiene archivos registrados."
+            )
+
+    def _boton_visualizar_archivo_camara(
+        self, fila: int, archivo: dict, habilitado: bool
+    ) -> None:
+        """Agrega el único disparador explícito de carga para el visor Cámara."""
+        boton = QPushButton("Visualizar")
+        boton.setEnabled(habilitado)
+        boton.setToolTip(
+            "Visualizar este archivo en el panel lateral."
+            if habilitado
+            else "El archivo no contiene un identificador para obtener su enlace temporal."
+        )
+        boton.clicked.connect(lambda: self._visualizar_archivo_camara(archivo))
+        self.tabla_archivos_camara.setCellWidget(fila, 5, boton)
+
+    def _visualizar_archivo_camara(self, archivo: dict) -> None:
+        """Obtiene el enlace sólo tras el clic explícito de una fila de Cámara."""
+        self._visualizar_archivo_en_visor(
+            self.visor_multimedia_camaras, archivo
+        )
+
+    def refrescar_peticiones(self) -> None:
+        """Programa una actualización sin bloquear la interfaz del Dashboard.
+
+        La tarea usa el mismo ``ClienteApi.listar_peticiones`` que usaba el
+        botón manual, pero lo desplaza a un hilo del pool. Si una consulta sigue
+        activa, se espera su resultado en vez de duplicar tráfico de red.
+        """
+        if self._consulta_peticiones_activa:
+            return
+        if not self._dashboard_activo:
+            return
+        self._consulta_peticiones_activa = True
+        tarea = ConsultaPeticiones(self.api.url_base, self.api.tiempo_espera)
+        tarea.senales.completada.connect(self._recibir_peticiones)
+        tarea.senales.fallida.connect(self._informar_error_peticiones)
+        self._pool_consultas.start(tarea)
+
+    @Slot(list)
+    def _recibir_peticiones(self, peticiones: list[dict]) -> None:
+        """Sincroniza el modelo recibido y conserva selección y celdas estables."""
+        self._consulta_peticiones_activa = False
+        if not self._dashboard_activo:
+            return
+        self._ultimo_error_peticiones = ""
+        self.peticiones = peticiones
+        self._sincronizar_tabla_peticiones()
+
+    @Slot(str)
+    def _informar_error_peticiones(self, mensaje: str) -> None:
+        """Registra un fallo de polling una vez, sin diálogos repetitivos."""
+        self._consulta_peticiones_activa = False
+        if not self._dashboard_activo:
+            return
+        if mensaje != self._ultimo_error_peticiones:
+            self.statusBar().showMessage(f"No se pudieron actualizar las peticiones: {mensaje}")
+            self._ultimo_error_peticiones = mensaje
+
+    def _sincronizar_tabla_peticiones(self) -> None:
+        """Actualiza sólo las celdas necesarias y restaura la fila seleccionada.
+
+        La identidad visible de cada fila es el ``_id`` de FastAPI. Cuando el
+        orden no cambia, se reutilizan los elementos y botones existentes; esto
+        evita parpadeos mientras una petición pasa de pendiente a ejecutada.
+        """
+        seleccionada = self._peticion_seleccionada()
+        seleccionada_id = seleccionada.get("_id") if seleccionada else None
+        ids_actuales = [
+            self.tabla_peticiones.item(fila, 0).text()
+            for fila in range(self.tabla_peticiones.rowCount())
+            if self.tabla_peticiones.item(fila, 0)
+        ]
+        ids_nuevos = [str(peticion.get("_id", "")) for peticion in self.peticiones]
+        estructura_cambio = ids_actuales != ids_nuevos
+        self.tabla_peticiones.setUpdatesEnabled(False)
+        # Bloquear sólo durante la sincronización evita que restaurar una fila
+        # dispare otra descarga o reinicie un video que ya estaba reproduciéndose.
+        bloqueador = QSignalBlocker(self.tabla_peticiones)
+        try:
+            if estructura_cambio:
+                self.tabla_peticiones.setRowCount(len(self.peticiones))
+
+            nombres_camaras = self._nombres_camaras_por_id()
+            for fila, peticion in enumerate(self.peticiones):
+                camara_id = peticion.get("camara_id", "")
+                valores = [
+                    peticion.get("_id", ""), self._camara_visible(camara_id, nombres_camaras),
+                    peticion.get("tipo", ""), peticion.get("estado", ""),
+                    peticion.get("fecha_hora", ""),
+                    peticion.get("nombre_archivo") or peticion.get("mensaje_error", ""),
+                ]
+                for columna, valor in enumerate(valores):
+                    item = self.tabla_peticiones.item(fila, columna)
+                    if item is None:
+                        item = QTableWidgetItem()
+                        self.tabla_peticiones.setItem(fila, columna, item)
+                    if item.text() != str(valor):
+                        item.setText(str(valor))
+                    item.setData(Qt.ItemDataRole.UserRole, peticion)
+                disponible = peticion.get("estado") == "ejecutado" and bool(peticion.get("archivo_id"))
+                boton = self.tabla_peticiones.cellWidget(fila, 6)
+                if estructura_cambio or boton is None:
+                    self._boton_archivos(self.tabla_peticiones, fila, 6, "peticion", peticion.get("_id", ""), disponible)
+                else:
+                    boton.setEnabled(disponible)
+                    boton.setToolTip("No hay un archivo disponible." if not disponible else "Consultar archivos disponibles")
+        finally:
+            self.tabla_peticiones.setUpdatesEnabled(True)
+
+        if seleccionada_id:
+            for fila, peticion in enumerate(self.peticiones):
+                if peticion.get("_id") == seleccionada_id:
+                    self.tabla_peticiones.selectRow(fila)
+                    break
+        del bloqueador
 
         self.estado_peticiones_label.setText(
             "No hay peticiones registradas." if not self.peticiones else ""
@@ -328,7 +805,6 @@ class VentanaPrincipal(QMainWindow):
             item = QTableWidgetItem(str(valor))
             item.setData(Qt.ItemDataRole.UserRole, datos)
             tabla.setItem(fila, columna, item)
-        tabla.resizeColumnsToContents()
 
     def _boton_archivos(self, tabla: QTableWidget, fila: int, columna: int, origen: str, identificador: str, habilitado: bool) -> None:
         """Añade acceso a archivos sin asumir que eventos o peticiones los tengan."""
@@ -339,40 +815,110 @@ class VentanaPrincipal(QMainWindow):
         tabla.setCellWidget(fila, columna, boton)
 
     def _mostrar_archivos(self, origen: str, identificador: str) -> None:
-        """Lista archivos relacionados y genera cada URL temporal al abrirla."""
+        """Muestra archivos de Peticiones y Eventos en visores independientes."""
+        visor = (
+            self.visor_multimedia_eventos
+            if origen == "evento"
+            else self.visor_multimedia_peticiones
+        )
+        cambiar_a_peticiones = origen == "peticion"
         try:
-            metodos = {
-                "camara": self.api.listar_archivos_camara,
-                "peticion": self.api.listar_archivos_peticion,
-                "evento": self.api.listar_archivos_evento,
-            }
-            archivos = metodos[origen](identificador)
-        except ErrorApi as exc:
-            QMessageBox.warning(self, "Archivos", str(exc))
+            if origen == "evento":
+                archivos = self.api.listar_archivos_evento(identificador)
+            elif origen == "peticion":
+                archivos = self.api.listar_archivos_peticion(identificador)
+            else:
+                archivos = self.api.listar_archivos_camara(identificador)
+        except ErrorApi:
+            visor.reiniciar("No se pudo obtener la lista de archivos.")
             return
         disponibles = [a for a in archivos if a.get("estado_subida") == "confirmada" and a.get("_id")]
         if not disponibles:
-            QMessageBox.information(self, "Archivos", "No hay archivos disponibles para visualizar.")
+            visor.reiniciar("No hay archivos disponibles para visualizar.")
+            return
+        if len(disponibles) == 1:
+            if cambiar_a_peticiones:
+                # Conserva la ruta pública de Peticiones y sus integraciones.
+                self._visualizar_archivo(disponibles[0])
+            else:
+                self._visualizar_archivo_en_visor(visor, disponibles[0])
             return
         dialogo = QDialog(self)
-        dialogo.setWindowTitle("Archivos disponibles")
+        dialogo.setWindowTitle(
+            "Seleccionar archivo del evento" if origen == "evento" else "Seleccionar archivo"
+        )
         layout = QVBoxLayout(dialogo)
         for archivo in disponibles:
             etiqueta = f"{archivo.get('nombre_archivo', 'Archivo')} — {archivo.get('tipo', '')} — {archivo.get('fecha_hora', '')}"
             boton = QPushButton(etiqueta)
-            boton.clicked.connect(lambda _, a=archivo: self._abrir_archivo(a))
+            boton.clicked.connect(
+                lambda _, a=archivo: self._elegir_archivo(
+                    dialogo, a, visor, cambiar_a_peticiones
+                )
+            )
             layout.addWidget(boton)
         dialogo.exec()
 
-    def _abrir_archivo(self, archivo: dict) -> None:
-        """Abre el visor predeterminado con un enlace B2 privado y de corta vida."""
+    def _elegir_archivo(
+        self,
+        dialogo: QDialog,
+        archivo: dict,
+        visor: VisorMultimedia,
+        cambiar_a_peticiones: bool,
+    ) -> None:
+        """Carga el archivo elegido en el visor asociado a su sección."""
+        dialogo.accept()
+        if cambiar_a_peticiones:
+            self._visualizar_archivo(archivo)
+        else:
+            self._visualizar_archivo_en_visor(visor, archivo)
+
+    def _visualizar_archivo(self, archivo: dict, peticion: dict | None = None) -> None:
+        """Conserva el visor propio de Peticiones para sus flujos existentes."""
+        self._visualizar_archivo_en_visor(
+            self.visor_multimedia_peticiones, archivo, peticion or {}, True
+        )
+
+    def _visualizar_archivo_en_visor(
+        self,
+        visor: VisorMultimedia,
+        archivo: dict,
+        peticion: dict | None = None,
+        cambiar_a_peticiones: bool = False,
+    ) -> None:
+        """Obtiene una URL temporal una sola vez y la entrega al visor indicado."""
         try:
             respuesta = self.api.enlace_visualizacion(archivo["_id"])
-        except ErrorApi as exc:
-            QMessageBox.warning(self, "Visualizar", str(exc))
+        except ErrorApi:
+            visor.reiniciar("No se pudo obtener el enlace temporal del archivo.")
             return
-        if not QDesktopServices.openUrl(QUrl(respuesta["url"])):
-            QMessageBox.warning(self, "Visualizar", "No se pudo abrir el visor predeterminado.")
+        if cambiar_a_peticiones:
+            self.tabs.setCurrentWidget(self.tab_peticiones)
+        visor.presentar(archivo, peticion or {}, respuesta)
+
+    def _presentar_archivo_en_visor(
+        self, archivo: dict, peticion: dict, respuesta: dict
+    ) -> None:
+        """Adaptador del visor de Peticiones para sus llamadas ya existentes."""
+        self.tabs.setCurrentWidget(self.tab_peticiones)
+        self.visor_multimedia_peticiones.presentar(archivo, peticion, respuesta)
+
+    @Slot(QNetworkReply)
+    def _cargar_imagen_recibida(self, respuesta: QNetworkReply) -> None:
+        self.visor_multimedia_peticiones._cargar_imagen_recibida(respuesta)
+
+    @Slot(QMediaPlayer.Error, str)
+    def _manejar_error_visor(self, _error: QMediaPlayer.Error, detalle: str) -> None:
+        self.visor_multimedia_peticiones._manejar_error(_error, detalle)
+
+    def _actualizar_controles_video(self, habilitados: bool) -> None:
+        self.visor_multimedia_peticiones._actualizar_controles_video(habilitados)
+
+    def _abrir_visualizacion_en_navegador(self) -> None:
+        self.visor_multimedia_peticiones.abrir_en_navegador()
+
+    def _mostrar_mensaje_visor(self, mensaje: str) -> None:
+        self.visor_multimedia_peticiones.mostrar_mensaje(mensaje)
 
     def _actualizar_selector_peticiones(self) -> None:
         # Rellena el combo de cámaras de la pestaña Peticiones con los IDs reales
@@ -615,11 +1161,50 @@ class VentanaPrincipal(QMainWindow):
     def _cerrar_sesion(self) -> None:
         # Limpia el estado local al cerrar sesión para evitar que datos de un
         # usuario queden visibles al volver a la pantalla de login.
+        self._dashboard_activo = False
+        if hasattr(self, "temporizador_peticiones"):
+            self.temporizador_peticiones.stop()
+        if hasattr(self, "reproductor_peticiones"):
+            self.reproductor_peticiones.stop()
+        if hasattr(self, "visor_multimedia_eventos"):
+            self.visor_multimedia_eventos.reproductor.stop()
+        if hasattr(self, "visor_multimedia_camaras"):
+            self.visor_multimedia_camaras.reproductor.stop()
         self.usuario_actual = None
         self.camaras = []
         self.peticiones = []
         self.eventos = []
         self._mostrar_login()
+
+    def closeEvent(self, evento: QCloseEvent) -> None:
+        """Detiene actividad asíncrona y libera HTTP al cerrar el Dashboard.
+
+        Las consultas de peticiones pueden terminar después de que el usuario
+        pulse cerrar. Marcar primero el Dashboard como inactivo hace que los
+        slots ignoren esas respuestas tardías; cerrar la sesión HTTP libera los
+        recursos de red sin alterar datos de FastAPI o MongoDB.
+        """
+        self._dashboard_activo = False
+        if hasattr(self, "temporizador_peticiones"):
+            self.temporizador_peticiones.stop()
+        for atributo in (
+            "visor_multimedia_peticiones",
+            "visor_multimedia_eventos",
+            "visor_multimedia_camaras",
+        ):
+            visor = getattr(self, atributo, None)
+            if visor is not None:
+                try:
+                    visor.reproductor.stop()
+                except RuntimeError:
+                    # Tras cerrar sesión Qt puede haber destruido el widget
+                    # central anterior. No es un fallo de reproducción ni debe
+                    # impedir cerrar la sesión HTTP que todavía sigue vigente.
+                    continue
+        cerrar = getattr(self.api, "cerrar", None)
+        if callable(cerrar):
+            cerrar()
+        evento.accept()
 
 
 class DialogoCamara(QDialog):

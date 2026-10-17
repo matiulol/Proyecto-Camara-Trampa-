@@ -63,7 +63,6 @@ class VentanaPrincipal(QMainWindow):
         cliente: ClienteBackend,
         intervalo_consulta_ms: int,
         duracion_video_segundos: int,
-        sensor_pir: SensorPIR | None = None,
         intervalo_configuracion_pir_ms: int = 30000,
     ) -> None:
         """Construye la ventana, conserva sus colaboradores y programa polling.
@@ -90,7 +89,8 @@ class VentanaPrincipal(QMainWindow):
         self.peticiones: list[dict] = []
         self.peticion_en_ejecucion: dict | None = None
         self.ruta_archivo_en_ejecucion: Path | None = None
-        self.sensor_pir = sensor_pir
+        self.sensor_pir: SensorPIR | None = None
+        self._cerrando = False
         self.configuracion_pir = {"pir_habilitado": False, "pir_tipo_captura": "foto", "pir_cooldown_segundos": 10}
         self.ultimo_movimiento_ms = 0
         self.setWindowTitle("Cámara Trampa - Monitor Raspberry")
@@ -111,14 +111,29 @@ class VentanaPrincipal(QMainWindow):
         self.temporizador_pir = QTimer(self)
         self.temporizador_pir.timeout.connect(self._actualizar_configuracion_pir)
         self.temporizador_pir.start(intervalo_configuracion_pir_ms)
-        if self.sensor_pir:
-            try:
-                self.sensor_pir.iniciar()
-            except ErrorPIR as exc:
-                self.statusBar().showMessage(str(exc))
         # Se consulta una vez al arrancar para no esperar el primer intervalo.
         self.consultar_peticiones()
         self._actualizar_configuracion_pir()
+
+    def iniciar_sensor_pir(self, sensor: SensorPIR) -> None:
+        """Asocia e inicia el PIR cuando la señal de la ventana ya es segura.
+
+        ``SensorPIR`` puede recibir eventos de GPIO desde otro hilo. Por eso el
+        punto de entrada crea primero la ventana y llama a este método después
+        de conectar ``movimiento_detectado`` con ``_procesar_movimiento``.
+        El callback del sensor sólo emite la señal de Qt; el slot y cualquier
+        acceso a la interfaz continúan en el hilo principal.
+        """
+        if self._cerrando:
+            return
+        self.sensor_pir = sensor
+        try:
+            sensor.iniciar()
+        except ErrorPIR as exc:
+            # La inicialización fallida no deja un sensor inactivo como si
+            # estuviera disponible para procesar movimientos.
+            self.sensor_pir = None
+            self.statusBar().showMessage(str(exc))
 
     def _actualizar_configuracion_pir(self) -> None:
         """Obtiene configuración por cámara; ante red caída conserva la última."""
@@ -130,8 +145,19 @@ class VentanaPrincipal(QMainWindow):
 
     @Slot()
     def _procesar_movimiento(self) -> None:
-        """Aplica cooldown solo al PIR; nunca bloquea ni altera órdenes manuales."""
-        if not self.sensor_pir or not self.configuracion_pir["pir_habilitado"] or self.peticion_en_ejecucion:
+        """Inicia captura sólo por un nuevo evento PIR fuera del cooldown.
+
+        El cooldown se consulta al llegar el evento y no programa ningún trabajo
+        posterior. Por ello su vencimiento por sí solo no puede producir una
+        foto o un vídeo: hace falta otro flanco ``sin movimiento -> movimiento``
+        emitido por ``SensorPIR``.
+        """
+        if (
+            self._cerrando
+            or not self.sensor_pir
+            or not self.configuracion_pir["pir_habilitado"]
+            or self.peticion_en_ejecucion
+        ):
             return
         from time import monotonic
         actual = monotonic()
@@ -174,8 +200,11 @@ class VentanaPrincipal(QMainWindow):
 
         # La tabla es de sólo lectura: representa el historial de solicitudes,
         # no un editor de documentos de MongoDB ni de Ani_cam.
-        self.tabla = QTableWidget(0, 5)
-        self.tabla.setHorizontalHeaderLabels(["ID", "Tipo", "Estado", "Fecha y hora", "Resultado"])
+        self.tabla = QTableWidget(0, 4)
+        # El identificador se conserva en UserRole y en el historial Python,
+        # pero no ocupa una columna visual: la vista muestra sólo los datos que
+        # el operador necesita para identificar y abrir cada captura.
+        self.tabla.setHorizontalHeaderLabels(["Tipo", "Fecha", "Estado", "Visualizar"])
         # La selección por filas permite tratar una petición completa como una
         # unidad. Deshabilitar edición evita que un texto visual parezca cambiar
         # el documento que FastAPI conserva en MongoDB.
@@ -185,7 +214,9 @@ class VentanaPrincipal(QMainWindow):
         self.tabla.horizontalHeader().setStretchLastSection(True)
         self.visor_imagen = QLabel("Selecciona una petición ejecutada para ver su archivo local")
         self.visor_imagen.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.visor_imagen.setMinimumSize(360, 260)
+        # Un visor compacto deja más área útil al historial sin alterar la
+        # proporción de fotos ni videos, que Qt escala dentro de este espacio.
+        self.visor_imagen.setMinimumSize(280, 190)
         self.visor_imagen.setFrameShape(QFrame.Shape.StyledPanel)
         self.visor_video = QVideoWidget()
         self.visor_video.hide()
@@ -201,32 +232,22 @@ class VentanaPrincipal(QMainWindow):
         # permite volver al visor de imágenes sin terminar la ventana principal.
         self.reproductor.errorOccurred.connect(self._manejar_error_multimedia)
         self.reproductor.mediaStatusChanged.connect(self._actualizar_estado_multimedia)
-        self.boton_ver = QPushButton("Ver foto o reproducir video")
-        self.boton_ver.setEnabled(False)
         visor = QWidget()
         diseno_visor = QVBoxLayout(visor)
         diseno_visor.addWidget(self.visor_imagen)
         diseno_visor.addWidget(self.visor_video)
-        diseno_visor.addWidget(self.boton_ver)
 
         # QSplitter permite que el usuario ajuste el espacio entre historial y
         # vista previa sin recalcular posiciones manualmente.
         panel = QSplitter(Qt.Orientation.Horizontal)
         panel.addWidget(self.tabla)
         panel.addWidget(visor)
+        panel.setSizes([560, 300])
         diseno.addWidget(panel, 1)
 
-        actualizar = QPushButton("Consultar ahora")
-        # Además del polling automático, este botón permite al usuario solicitar
-        # un GET inmediato. Ambos caminos reutilizan el mismo método para que el
-        # comportamiento y el manejo de errores sean consistentes.
-        actualizar.clicked.connect(self.consultar_peticiones)
-        diseno.addWidget(actualizar)
-
-        # Las señales traducen eventos del widget en métodos de esta ventana.
-        # Qt se ocupa de invocarlos dentro de su ciclo de eventos.
-        self.tabla.itemSelectionChanged.connect(self._preparar_visualizacion)
-        self.boton_ver.clicked.connect(self._visualizar_seleccion)
+        # El polling ya activo conserva la actualización automática. Cada fila
+        # incorpora su propia acción de visualización para no depender de un
+        # botón global ni de la selección actual de otra fila.
 
     def _verificar_camara(self) -> None:
         """Intenta detectar la cámara al arrancar sin impedir abrir la ventana.
@@ -343,8 +364,13 @@ class VentanaPrincipal(QMainWindow):
                     self.peticion_en_ejecucion["_id"], "error", mensaje_error=str(exc)
                 )
                 self._reemplazar_peticion(respuesta)
-            except ErrorBackend:
-                pass
+            except ErrorBackend as error_resultado:
+                # No se oculta el segundo fallo: puede indicar que FastAPI no
+                # logró reconciliar el archivo que B2 ya aceptó. La copia local
+                # permanece en SD y el detalle queda visible para diagnosticar.
+                detalle = f"{exc} | No se pudo informar el resultado: {error_resultado}"
+                self.peticion_en_ejecucion["mensaje_error"] = detalle
+                self.statusBar().showMessage(detalle)
         else:
             self._reemplazar_peticion(respuesta)
         self._limpiar_ejecucion()
@@ -405,13 +431,12 @@ class VentanaPrincipal(QMainWindow):
         """
         self.tabla.setRowCount(len(self.peticiones))
         for fila, peticion in enumerate(self.peticiones):
-            resultado = peticion.get("nombre_archivo") or peticion.get("mensaje_error", "")
             valores = [
-                peticion.get("_id", ""),
-                peticion.get("tipo", ""),
-                peticion.get("estado", "pendiente"),
+                # El backend conserva ``foto`` como valor técnico; la tabla lo
+                # traduce a la denominación pedida sin modificar el documento.
+                {"foto": "Fotografía", "video": "Video"}.get(peticion.get("tipo", ""), peticion.get("tipo", "")),
                 peticion.get("fecha_hora", ""),
-                resultado,
+                peticion.get("estado", "pendiente"),
             ]
             for columna, valor in enumerate(valores):
                 # UserRole conserva la petición completa fuera del texto visible
@@ -419,17 +444,20 @@ class VentanaPrincipal(QMainWindow):
                 elemento = QTableWidgetItem(str(valor))
                 elemento.setData(Qt.ItemDataRole.UserRole, peticion)
                 self.tabla.setItem(fila, columna, elemento)
+            # La clausura captura el diccionario de esta iteración como valor por
+            # defecto; así cada botón abre su archivo y no el de la última fila.
+            boton = QPushButton("Visualizar")
+            boton.setEnabled(
+                peticion.get("estado") == "ejecutado" and bool(peticion.get("nombre_archivo"))
+            )
+            boton.setToolTip(
+                "Abrir la captura local" if boton.isEnabled() else "El archivo todavía no está disponible."
+            )
+            boton.clicked.connect(lambda _, p=peticion: self._visualizar_peticion(p))
+            self.tabla.setCellWidget(fila, 3, boton)
+        self.tabla.resizeColumnsToContents()
 
-    def _preparar_visualizacion(self) -> None:
-        """Habilita el visor sólo cuando la señal de selección indica una fila.
-
-        Se ejecuta como *slot* de ``itemSelectionChanged``. Consultar el modelo
-        de selección evita intentar abrir un archivo cuando el usuario no eligió
-        ninguna petición.
-        """
-        self.boton_ver.setEnabled(bool(self.tabla.selectionModel().selectedRows()))
-
-    def _visualizar_seleccion(self) -> None:
+    def _visualizar_peticion(self, peticion: dict) -> None:
         """Muestra un JPEG o delega un MP4 al backend de Qt Multimedia.
 
         La ruta se reconstruye dentro del directorio de la cámara actual, no se
@@ -439,12 +467,9 @@ class VentanaPrincipal(QMainWindow):
         y entrega los cuadros a ``QVideoWidget``; su decodificación es asíncrona,
         por lo que los errores posteriores llegan a los slots multimedia.
         """
-        filas = self.tabla.selectionModel().selectedRows()
-        if not filas:
-            return
-        peticion = self.tabla.item(filas[0].row(), 0).data(Qt.ItemDataRole.UserRole)
-        # La petición se recupera desde UserRole, no reconstruyéndola a partir de
-        # las columnas de texto. Así se conservan campos que no son visibles.
+        # La petición llega desde el botón de su fila. Aunque el ID sea interno
+        # y no se muestre, se conserva en el diccionario para relacionar archivo
+        # local, resultado y la petición que FastAPI registró.
         nombre = peticion.get("nombre_archivo")
         if not nombre or peticion.get("estado") != "ejecutado":
             QMessageBox.information(
@@ -533,14 +558,21 @@ class VentanaPrincipal(QMainWindow):
         de destruir la ventana. Detener primero los servicios evita que un
         callback pendiente use recursos que ya están siendo liberados.
         """
+        # La marca se establece antes de cerrar GPIO. Así una señal de Qt que
+        # hubiese quedado en cola durante el cierre no inicia otra captura.
+        self._cerrando = True
         self.temporizador.stop()
+        self.temporizador_pir.stop()
         # Detener primero el temporizador evita que un nuevo polling se dispare
         # mientras la sesión HTTP y la cámara ya se están cerrando.
         self.reproductor.stop()
+        if self.sensor_pir:
+            # ``cerrar`` anula primero el callback GPIO, para que ningún hilo
+            # del sensor intente emitir hacia una ventana en destrucción.
+            self.sensor_pir.cerrar()
+            self.sensor_pir = None
         self.cliente.cerrar()
         self.controlador.cerrar()
-        if self.sensor_pir:
-            self.sensor_pir.cerrar()
         evento.accept()
     # GPIO Zero puede notificar desde otro hilo; Signal entrega el trabajo al
     # ciclo Qt para no tocar cámara ni widgets desde el callback GPIO.

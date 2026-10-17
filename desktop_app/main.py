@@ -1,4 +1,4 @@
-"""Punto de entrada del Dashboard PySide6 de ANICAM."""
+"""entrada del Dashboard PySide6 de ANICAM."""
 
 import sys
 

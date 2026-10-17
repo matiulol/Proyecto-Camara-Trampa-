@@ -1,5 +1,6 @@
 # datetime se usa para guardar fecha_hora de creación de la petición.
 from datetime import datetime
+import logging
 
 # ObjectId permite consultar documentos de MongoDB por el _id real generado.
 from bson import ObjectId
@@ -8,6 +9,7 @@ from bson import ObjectId
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 # Database tipa la conexión que se recibe desde database.connection.
 from pymongo.database import Database
+from pymongo.errors import PyMongoError
 
 # get_database entrega la instancia conectada a la base Ani_cam.
 from database.connection import get_database
@@ -26,6 +28,62 @@ from services.servicio_b2 import ErrorB2, clave_objeto, subir_archivo
 # Agrupa todos los endpoints de peticiones bajo /api/v1/peticiones.
 # Una petición representa "quiero que esta cámara haga algo".
 router = APIRouter(prefix="/peticiones", tags=["peticiones"])
+logger = logging.getLogger(__name__)
+
+
+def _actualizar_evento_relacionado(db: Database, peticion: dict, cambios: dict) -> None:
+    """Actualiza sólo el evento PIR vinculado, cuando el flujo lo creó."""
+    evento_id = peticion.get("evento_id")
+    if not evento_id:
+        return
+    filtro = {"_id": ObjectId(evento_id) if ObjectId.is_valid(evento_id) else evento_id}
+    resultado = db.eventos.update_one(filtro, {"$set": cambios})
+    if resultado.matched_count != 1:
+        raise RuntimeError("No se encontró el evento PIR asociado a la petición.")
+
+
+def _confirmar_peticion_con_archivo(
+    db: Database, peticion: dict, peticion_id: str, metadato: dict
+) -> dict:
+    """Vincula una captura B2 ya confirmada con su petición y evento PIR.
+
+    Esta operación es idempotente a nivel del objeto B2: si una respuesta HTTP
+    se pierde después de confirmar el metadato, un segundo intento sólo completa
+    la relación de MongoDB y no vuelve a cargar bytes ni crea otro documento.
+    """
+    actualizacion = db.peticiones.update_one(
+        {"_id": ObjectId(peticion_id), "estado": "pendiente"},
+        {
+            "$set": {
+                "estado": "ejecutado",
+                "archivo_id": str(metadato["_id"]),
+                "nombre_archivo": metadato.get("nombre_archivo", ""),
+            }
+        },
+    )
+    if actualizacion.matched_count != 1:
+        # Otro reintento pudo haber terminado la misma petición entre la lectura
+        # inicial y esta actualización. Si dejó exactamente el mismo archivo
+        # confirmado, se trata de un éxito idempotente y sólo resta asegurar el
+        # vínculo del evento PIR. Cualquier otro estado sigue siendo conflicto.
+        actualizada = db.peticiones.find_one({"_id": ObjectId(peticion_id)})
+        if not (
+            actualizada
+            and actualizada.get("estado") == "ejecutado"
+            and actualizada.get("archivo_id") == str(metadato["_id"])
+        ):
+            raise RuntimeError("No se pudo confirmar la petición en MongoDB.")
+        _actualizar_evento_relacionado(
+            db, actualizada, {"estado": "ejecutado", "archivo_id": str(metadato["_id"])}
+        )
+        return actualizada
+    _actualizar_evento_relacionado(
+        db, peticion, {"estado": "ejecutado", "archivo_id": str(metadato["_id"])}
+    )
+    actualizada = db.peticiones.find_one({"_id": ObjectId(peticion_id)})
+    if actualizada is None:
+        raise RuntimeError("No se pudo recuperar la petición confirmada.")
+    return actualizada
 
 
 def _obtener_peticion_o_404(peticion_id: str, db: Database) -> dict:
@@ -64,12 +122,55 @@ def crear_peticion(
     # reciba mediante polling y comunique un resultado final.
     datos = peticion.model_dump()
     datos["estado"] = "pendiente"
-    datos["fecha_hora"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ahora = datetime.now()
+    datos["fecha_hora"] = ahora.strftime("%Y-%m-%d %H:%M:%S")
 
-    # Inserta el documento en la colección nueva Ani_cam.peticiones y luego lo
-    # vuelve a leer para devolver la versión exacta guardada por MongoDB.
-    resultado = db.peticiones.insert_one(datos)
-    creada = db.peticiones.find_one({"_id": resultado.inserted_id})
+    evento_id = None
+    peticion_creada_id = None
+    try:
+        # Una detección PIR es un evento real. Se registra antes de exponer la
+        # orden para que la captura posterior pueda conservar ``id_evento``.
+        if datos["origen"] == "pir":
+            evento = {
+                "camara_id": peticion.camara_id,
+                "fecha": ahora.strftime("%Y-%m-%d"),
+                "hora": ahora.strftime("%H:%M:%S"),
+                "tipo": peticion.tipo,
+                "descripcion": "Captura automática detectada por sensor PIR.",
+                "estado": "pendiente",
+            }
+            evento_id = db.eventos.insert_one(evento).inserted_id
+            datos["evento_id"] = str(evento_id)
+
+        resultado = db.peticiones.insert_one(datos)
+        peticion_creada_id = resultado.inserted_id
+        if evento_id is not None:
+            vinculo = db.eventos.update_one(
+                {"_id": evento_id}, {"$set": {"peticion_id": str(resultado.inserted_id)}}
+            )
+            if vinculo.matched_count != 1:
+                raise RuntimeError("No se pudo vincular el evento PIR con su petición.")
+        creada = db.peticiones.find_one({"_id": resultado.inserted_id})
+        if creada is None:
+            raise RuntimeError("MongoDB no devolvió la petición creada.")
+    except (PyMongoError, RuntimeError) as exc:
+        # No se dejan registros PIR a medias si no pudo quedar disponible la
+        # orden. La limpieza sólo afecta los IDs creados en esta misma llamada.
+        if peticion_creada_id is not None:
+            try:
+                db.peticiones.delete_one({"_id": peticion_creada_id})
+            except PyMongoError:
+                logger.exception("No se pudo limpiar una petición PIR sin evento vinculado.")
+        if evento_id is not None:
+            try:
+                db.eventos.delete_one({"_id": evento_id})
+            except PyMongoError:
+                logger.exception("No se pudo limpiar un evento PIR sin petición.")
+        logger.exception("No se pudo crear una petición: camara_id=%s", peticion.camara_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No se pudo registrar la petición en MongoDB. Intente nuevamente.",
+        ) from exc
     return serializar_documento(creada)
 
 
@@ -127,15 +228,58 @@ def registrar_resultado_peticion(
     resultado: PeticionResultado,
     db: Database = Depends(get_database),
 ) -> dict:
-    # La Raspberry llama esta ruta al finalizar una foto o video. Se exige que la
-    # petición siga pendiente para que un reintento tardío no sobrescriba el
-    # historial ya terminado con estado ejecutado o error.
+    # La Raspberry llama esta ruta al finalizar una foto o video. Un reintento
+    # tardío no puede sobrescribir el historial ya terminado con estado error.
     peticion = _obtener_peticion_o_404(peticion_id, db)
+    # Si B2 y el metadato ya quedaron confirmados pero FastAPI perdió la
+    # respuesta final, la Raspberry puede intentar comunicar un error. El
+    # archivo confirmado es evidencia suficiente para reconciliar la petición
+    # como ejecutada, sin sobrescribirlo por un falso estado de error.
+    metadato_confirmado = db.archivos.find_one(
+        {"peticion_id": peticion_id, "estado_subida": "confirmada"}
+    )
+    if peticion["estado"] == "ejecutado" and metadato_confirmado:
+        try:
+            # También repara el único paso que pudo quedar pendiente si la
+            # actualización de la petición fue confirmada antes que la del
+            # evento PIR, sin modificar la captura ni crear otro metadato.
+            _actualizar_evento_relacionado(
+                db,
+                peticion,
+                {"estado": "ejecutado", "archivo_id": str(metadato_confirmado["_id"])},
+            )
+        except (PyMongoError, RuntimeError) as exc:
+            logger.exception(
+                "No se pudo reconciliar el evento de una captura confirmada: peticion_id=%s",
+                peticion_id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="No se pudo confirmar el evento asociado a la captura.",
+            ) from exc
+        return serializar_documento(peticion)
+
     if peticion["estado"] != "pendiente":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="La petición ya fue resuelta y no puede registrar otro resultado.",
         )
+
+    if metadato_confirmado:
+        try:
+            actualizada = _confirmar_peticion_con_archivo(
+                db, peticion, peticion_id, metadato_confirmado
+            )
+        except (PyMongoError, RuntimeError) as exc:
+            logger.exception(
+                "No se pudo reconciliar una captura confirmada: peticion_id=%s",
+                peticion_id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="No se pudo confirmar la captura ya subida en MongoDB.",
+            ) from exc
+        return serializar_documento(actualizada)
 
     cambios: dict[str, str] = {"estado": resultado.estado}
     if resultado.estado == "error":
@@ -148,8 +292,24 @@ def registrar_resultado_peticion(
             detail="Use la carga de archivo para confirmar una captura ejecutada.",
         )
 
-    db.peticiones.update_one({"_id": ObjectId(peticion_id)}, {"$set": cambios})
-    actualizada = db.peticiones.find_one({"_id": ObjectId(peticion_id)})
+    try:
+        actualizacion = db.peticiones.update_one(
+            {"_id": ObjectId(peticion_id), "estado": "pendiente"}, {"$set": cambios}
+        )
+        if actualizacion.matched_count != 1:
+            raise RuntimeError("La petición ya no estaba pendiente al registrar el error.")
+        _actualizar_evento_relacionado(
+            db, peticion, {"estado": "error", "mensaje_error": cambios["mensaje_error"]}
+        )
+        actualizada = db.peticiones.find_one({"_id": ObjectId(peticion_id)})
+        if actualizada is None:
+            raise RuntimeError("No se pudo recuperar la petición con error.")
+    except (PyMongoError, RuntimeError) as exc:
+        logger.exception("No se pudo registrar el error de captura: peticion_id=%s", peticion_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No se pudo registrar el error de captura en MongoDB.",
+        ) from exc
     return serializar_documento(actualizada)
 
 
@@ -166,10 +326,27 @@ def recibir_archivo_capturado(
     """
     peticion = _obtener_peticion_o_404(peticion_id, db)
     if peticion["estado"] == "ejecutado":
-        existente = db.archivos.find_one({"peticion_id": peticion_id, "estado_subida": "confirmada"})
+        existente = db.archivos.find_one(
+            {"peticion_id": peticion_id, "estado_subida": "confirmada"}
+        )
         if existente:
+            try:
+                _actualizar_evento_relacionado(
+                    db,
+                    peticion,
+                    {"estado": "ejecutado", "archivo_id": str(existente["_id"])},
+                )
+            except (PyMongoError, RuntimeError) as exc:
+                logger.exception(
+                    "No se pudo reconciliar el evento de una captura confirmada: peticion_id=%s",
+                    peticion_id,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="No se pudo confirmar el evento asociado a la captura.",
+                ) from exc
             return serializar_documento(peticion)
-        raise HTTPException(status_code=409, detail="La petición ya fue resuelta.")
+        raise HTTPException(status_code=409, detail="La petición fue resuelta sin metadato confirmado.")
     if peticion["estado"] == "error":
         raise HTTPException(status_code=409, detail="La petición ya tiene un error registrado.")
 
@@ -180,32 +357,88 @@ def recibir_archivo_capturado(
 
     tipo = "imagen" if peticion["tipo"] == "foto" else "video"
     contenido = "image/jpeg" if tipo == "imagen" else "video/mp4"
-    clave = clave_objeto(peticion["camara_id"], peticion_id, archivo.filename or "captura", tipo)
+    clave = clave_objeto(
+        peticion["camara_id"], peticion_id, archivo.filename or "captura", tipo
+    )
     try:
-        # upload_fileobj transmite desde el archivo temporal HTTP; no depende de
-        # ninguna ruta de la Raspberry y no duplica el objeto al reintentar.
-        subir_archivo(archivo.file, clave, contenido)
+        # Se guarda el metadato pendiente antes de subir. Así un fallo de
+        # MongoDB no se confunde con uno de B2 ni deja un éxito falso.
+        metadato = db.archivos.find_one({"peticion_id": peticion_id})
+        if metadato is None:
+            datos_archivo = {
+                "id_camara": peticion["camara_id"],
+                "peticion_id": peticion_id,
+                "tipo": tipo,
+                "nombre_archivo": archivo.filename,
+                "fecha_hora": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "clave_b2": clave,
+                "estado_subida": "pendiente",
+                "tipo_contenido": contenido,
+            }
+            if peticion.get("evento_id"):
+                datos_archivo["id_evento"] = peticion["evento_id"]
+            archivo_id = db.archivos.insert_one(datos_archivo).inserted_id
+            metadato = db.archivos.find_one({"_id": archivo_id})
+        if metadato is None:
+            raise RuntimeError("MongoDB no devolvió el metadato de la captura.")
+    except (PyMongoError, RuntimeError) as exc:
+        logger.exception("No se pudo guardar el metadato pendiente: peticion_id=%s", peticion_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No se pudo guardar el metadato de la captura en MongoDB.",
+        ) from exc
+
+    try:
+        # La clave determinista conserva la idempotencia del flujo existente:
+        # si la Raspberry repite el POST, B2 actualiza el mismo objeto.
+        if metadato.get("estado_subida") != "confirmada":
+            subir_archivo(archivo.file, metadato.get("clave_b2", clave), contenido)
     except ErrorB2 as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from None
+        # El documento pendiente ya existe, por lo que el fallo de B2 puede
+        # quedar reflejado sin esperar a que la Raspberry logre una segunda
+        # llamada a /resultado. Así no se muestra como pendiente una carga que
+        # el proveedor rechazó.
+        try:
+            archivo_error = db.archivos.update_one(
+                {"_id": metadato["_id"]},
+                {"$set": {"estado_subida": "error", "mensaje_error": str(exc)}},
+            )
+            if archivo_error.matched_count != 1:
+                raise RuntimeError("No se pudo registrar el fallo de B2 en el metadato.")
+            peticion_error = db.peticiones.update_one(
+                {"_id": ObjectId(peticion_id), "estado": "pendiente"},
+                {"$set": {"estado": "error", "mensaje_error": str(exc)}},
+            )
+            if peticion_error.matched_count != 1:
+                raise RuntimeError("No se pudo registrar el fallo de B2 en la petición.")
+            _actualizar_evento_relacionado(
+                db, peticion, {"estado": "error", "mensaje_error": str(exc)}
+            )
+        except (PyMongoError, RuntimeError):
+            logger.exception(
+                "B2 rechazó el archivo y MongoDB no pudo reflejar el fallo: peticion_id=%s",
+                peticion_id,
+            )
+        logger.warning("Fallo de B2 para peticion_id=%s", peticion_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from None
     finally:
         archivo.file.close()
 
-    # La consulta previa hace idempotente el registro si B2 confirmó una subida
-    # anterior pero la Raspberry repite la solicitud por un corte de red.
-    existente = db.archivos.find_one({"peticion_id": peticion_id})
-    fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    datos_archivo = {
-        "id_camara": peticion["camara_id"], "peticion_id": peticion_id,
-        "tipo": tipo, "nombre_archivo": archivo.filename, "fecha_hora": fecha,
-        "clave_b2": clave, "estado_subida": "confirmada", "tipo_contenido": contenido,
-    }
-    if existente:
-        db.archivos.update_one({"_id": existente["_id"]}, {"$set": datos_archivo})
-        archivo_id = existente["_id"]
-    else:
-        archivo_id = db.archivos.insert_one(datos_archivo).inserted_id
-    db.peticiones.update_one(
-        {"_id": ObjectId(peticion_id)},
-        {"$set": {"estado": "ejecutado", "archivo_id": str(archivo_id), "nombre_archivo": archivo.filename}},
-    )
-    return serializar_documento(db.peticiones.find_one({"_id": ObjectId(peticion_id)}))
+    try:
+        confirmado = db.archivos.update_one(
+            {"_id": metadato["_id"]}, {"$set": {"estado_subida": "confirmada"}}
+        )
+        if confirmado.matched_count != 1:
+            raise RuntimeError("No se pudo confirmar el metadato de la captura.")
+        actualizada = _confirmar_peticion_con_archivo(
+            db, peticion, peticion_id, metadato
+        )
+        return serializar_documento(actualizada)
+    except (PyMongoError, RuntimeError) as exc:
+        logger.exception("B2 confirmó el archivo, pero MongoDB no terminó la confirmación: peticion_id=%s", peticion_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="B2 confirmó el archivo, pero MongoDB no pudo finalizar sus metadatos.",
+        ) from exc

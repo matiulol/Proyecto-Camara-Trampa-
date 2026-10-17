@@ -24,8 +24,9 @@ Raspberry Pi + Picamera2 ────┘
 1. El Dashboard crea una petición `foto` o `video`.
 2. La Raspberry consulta periódicamente si hay una petición pendiente para su
    cámara, realiza la captura y conserva el archivo local.
-3. La Raspberry informa el resultado a FastAPI; este actualiza `peticiones` y
-   registra metadatos en `archivos`.
+3. La Raspberry envía el JPEG o MP4 cerrado a FastAPI. El backend registra el
+   metadato pendiente, confirma B2 y luego actualiza `peticiones`, `archivos` y,
+   cuando corresponde, el evento PIR relacionado.
 
 ## Instalación y orden de inicio
 
@@ -50,8 +51,6 @@ El orden importa porque cada componente depende del anterior:
 
    ```powershell
    cd backend
-   python -m venv .venv
-   .\.venv\Scripts\Activate.ps1
    pip install -r requirements.txt
    uvicorn main:app --host 0.0.0.0 --port 8000 --reload
    ```
@@ -90,15 +89,56 @@ El orden importa porque cada componente depende del anterior:
 
    ```powershell
    cd desktop_app
-   python -m venv .venv
-   .\.venv\Scripts\Activate.ps1
    pip install -r requirements.txt
    python main.py
    ```
 
+   Si el Dashboard se ejecuta desde otra PC de la red, defina antes
+   `ANICAM_API_BASE_URL` con la IPv4 de la PC que ejecuta FastAPI; por defecto
+   conserva `http://127.0.0.1:8000/api/v1`:
+
+   ```powershell
+   $env:ANICAM_API_BASE_URL = "http://192.168.1.100:8000/api/v1"
+   python main.py
+   ```
+
    Inicie sesión, seleccione una cámara y cree una petición de prueba. La
-   Raspberry mostrará la conexión, ejecutará el trabajo pendiente y el Dashboard
-   verá el estado actualizado al refrescarlo.
+   Raspberry mostrará la conexión y ejecutará el trabajo pendiente. El Dashboard
+   consulta el historial de peticiones automáticamente cada cinco segundos en un
+   hilo de trabajo, por lo que el estado cambia sin pulsar **Actualizar** ni
+   bloquear la interfaz. Al seleccionar una petición ejecutada, su visor lateral
+   usa la URL prefirmada temporal de B2 para mostrar la fotografía o reproducir
+   el video; no es una transmisión en vivo. FastAPI clasifica el archivo de una
+   foto como `imagen` y con MIME `image/jpeg`, mientras que la petición conserva
+   el valor técnico `foto`; el Dashboard reconoce ambos contratos. Las fotos se
+   descargan en segundo plano con Qt Network y se ajustan sin deformarse. El
+   visor conserva **Abrir en navegador** como respaldo para enlaces vencidos o
+   videos cuyo códec no pueda decodificar Qt Multimedia.
+
+   En **Cámaras**, primero seleccione la cámara: el Dashboard consulta
+   `archivos` por su `id_camara` y muestra a la izquierda una tabla de nombre,
+   tipo, fecha, origen y estado. La tabla usa los campos reales
+   `nombre_archivo`, `tipo`/`tipo_contenido`, `fecha_hora` (o la fecha de
+   captura/creación que exista) y `estado_subida`. El origen sólo se muestra
+   como **Petición** si el documento contiene `peticion_id`, o como **Evento**
+   si contiene `id_evento`; si faltan ambas relaciones o están las dos, muestra
+   **Desconocido**. Para clasificar esos archivos sin relación hace falta que el
+   productor guarde uno de esos identificadores en `archivos`; el Dashboard no
+   lo deduce del nombre del archivo.
+
+   Seleccionar una fila de archivo es pasivo. Sólo **Visualizar** solicita la
+   URL temporal y la carga en el visor lateral propio de Cámaras, sin ventanas
+   emergentes ni cambios en los visores de Peticiones o Eventos. El visor de
+   Cámaras mantiene su propia URL, descarga, reproductor y controles; el botón
+   **Abrir en navegador** es la alternativa explícita. Las cámaras sin archivos
+   y los errores de URL, descarga o formato se informan dentro de la sección o
+   del visor, sin alertas redundantes.
+
+   La reproducción integrada de MP4 requiere que la instalación de Qt incluya
+   el backend Qt Multimedia y soporte para el códec del archivo (las capturas
+   de ANICAM se generan como H.264/MP4). La interfaz muestra reproducción,
+   pausa y volumen cuando ese backend está disponible; la compatibilidad real
+   debe comprobarse con un MP4 en el sistema de destino.
 
 ## Dependencias reales de Raspberry Pi
 
@@ -126,6 +166,37 @@ y registra la petición como error. Para visualizar, el Dashboard solicita al
 backend una URL prefirmada de cinco minutos: la URL no se guarda en MongoDB ni
 vuelve público el depósito.
 
+## Persistencia de metadatos de capturas
+
+La causa corregida era el orden de confirmación: el flujo anterior subía primero
+a B2 y recién después insertaba o actualizaba MongoDB, sin comprobar el
+resultado de esas escrituras. Una caída de MongoDB después de la subida podía
+dejar un objeto en B2 sin documento en `Ani_cam.archivos`.
+
+Ahora el endpoint de carga registra primero un metadato con
+`estado_subida: pendiente` y los campos existentes `id_camara`, `peticion_id`,
+`tipo`, `nombre_archivo`, `fecha_hora`, `clave_b2` y `tipo_contenido`. Sólo tras
+esa escritura se envía el archivo a B2. Luego el backend verifica que
+`archivos` quede `confirmada` y que `peticiones` quede `ejecutado`; ante un
+fallo de MongoDB devuelve error y no informa éxito falso. Si B2 rechaza la
+carga, el metadato, la petición y, cuando corresponda, el evento PIR quedan en
+estado `error`. Las capturas PIR
+registran además un evento `pendiente`, relacionado mediante `evento_id` e
+`id_evento`, que se actualiza al confirmar o fallar.
+
+Para inspeccionar la misma instancia que usa FastAPI, en la PC del backend abra
+`mongosh`, ejecute `use Ani_cam` y consulte
+`db.archivos.find({id_camara:"camara001"})`. Los registros históricos pueden
+usar formatos de fecha distintos, por lo que el endpoint los ordena
+cronológicamente antes de responder al Dashboard. Si aparece un registro
+`pendiente`, el metadato previo a B2 quedó persistido y debe revisarse el log de
+Uvicorn para distinguir fallo de B2 de una confirmación de MongoDB.
+
+Al iniciar, FastAPI crea de forma idempotente índices **no únicos** para el
+polling de peticiones, los historiales y las relaciones de archivos. No cambia
+documentos ni borra información histórica. Si el usuario de MongoDB no puede
+crearlos, el backend sigue disponible y deja una advertencia segura en el log.
+
 ## Problemas frecuentes
 
 | Situación | Qué comprobar |
@@ -138,6 +209,7 @@ vuelve público el depósito.
 
 ## Alcance actual
 
-No hay JWT, nube, transferencia de archivos al Dashboard ni creación automática
-de eventos. Los videos y fotografías permanecen en la Raspberry; MongoDB guarda
-sus metadatos y la relación con la petición.
+No hay JWT, acceso directo del Dashboard a B2 ni mensajería adicional. La
+Raspberry conserva las capturas en SD; B2 guarda la copia privada y MongoDB sus
+metadatos y relaciones. Los eventos automáticos sólo se crean para peticiones de
+origen PIR, no para peticiones manuales.

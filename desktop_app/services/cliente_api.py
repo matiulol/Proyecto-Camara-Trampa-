@@ -33,6 +33,15 @@ class ClienteApi:
         # La sesión reutiliza conexiones HTTP mientras la app está abierta.
         self.sesion = requests.Session()
 
+    def cerrar(self) -> None:
+        """Libera conexiones HTTP al cerrar definitivamente el Dashboard.
+
+        La sesión principal vive durante toda la ventana para reutilizar sus
+        conexiones; cerrarla aquí evita dejar adaptadores y sockets abiertos al
+        finalizar la aplicación. No modifica datos ni solicitudes de FastAPI.
+        """
+        self.sesion.close()
+
     def iniciar_sesion(self, usuario: str, contrasena: str) -> dict:
         # Envía credenciales al endpoint existente de autenticación. No se agrega
         # JWT en esta etapa porque el backend actual usa login básico.
@@ -158,8 +167,13 @@ class ClienteApi:
 
 def comprobar_conexion_backend() -> tuple[bool, str]:
     """Comprueba conectividad consultando un endpoint que requiere MongoDB."""
+    cliente = ClienteApi()
     try:
-        ClienteApi().listar_camaras()
+        cliente.listar_camaras()
     except ErrorApi as exc:
         return False, str(exc)
+    finally:
+        # Esta comprobación crea una sesión temporal, a diferencia de la sesión
+        # que conserva la ventana durante toda su vida útil.
+        cliente.cerrar()
     return True, "Backend conectado correctamente"

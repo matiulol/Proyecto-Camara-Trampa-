@@ -7,7 +7,7 @@ from fastapi import FastAPI
 # settings concentra nombre del proyecto, prefijo de API y configuración MongoDB.
 from config.settings import settings
 # Estas funciones manejan la comprobación y cierre de la conexión con MongoDB.
-from database.connection import cerrar_conexion, comprobar_conexion
+from database.connection import cerrar_conexion, comprobar_conexion, preparar_indices
 # Cada router agrupa endpoints de una parte concreta del sistema.
 from routers.autenticacion import router as autenticacion_router
 from routers.archivos import router as archivos_router
@@ -23,6 +23,10 @@ async def lifespan(app: FastAPI):
     # Al iniciar FastAPI se comprueba que MongoDB responda. Si Ani_cam no está
     # disponible, el error aparece al arrancar y no durante una acción del usuario.
     comprobar_conexion()
+    # Los índices se crean de forma idempotente y no cambian documentos ni
+    # colecciones históricas. Si faltan permisos, el helper deja una advertencia
+    # y la API conserva su funcionamiento normal.
+    preparar_indices()
     try:
         yield
     finally:

@@ -3,8 +3,8 @@ ANICAM — Cámara Trampa Inteligente para Reserva Natural
 
 ANICAM conecta un Dashboard PySide6, FastAPI, MongoDB Ani_cam y una Raspberry
 Pi con Picamera2. El Dashboard solicita una foto o video; la Raspberry consulta
-la petición por HTTP, captura el archivo en su tarjeta SD e informa el resultado
-al backend. FastAPI es el único componente que usa MongoDB.
+la petición por HTTP, captura el archivo en su tarjeta SD y lo envía al backend.
+FastAPI es el único componente que usa MongoDB y las credenciales de B2.
 
 Base de datos obligatoria: Ani_cam
 Conexión local: MONGODB_URI=mongodb://localhost:27017 en backend/.env.
@@ -37,6 +37,9 @@ ORDEN DE INICIO
    La IP es solo ejemplo. localhost y 127.0.0.1 en la Raspberry representan la
    propia Raspberry, no la PC. El puerto debe coincidir con Uvicorn.
 5. Iniciar desktop_app con python main.py, iniciar sesión y crear una petición.
+   Si Dashboard y FastAPI están en PCs distintas, definir antes:
+
+   $env:ANICAM_API_BASE_URL = "http://IP_DE_LA_PC:8000/api/v1"
 
 DEPENDENCIAS DE RASPBERRY
 sudo apt update
@@ -52,6 +55,18 @@ B2_NOMBRE_DEPOSITO, B2_REGION, B2_IDENTIFICADOR_CLAVE y B2_CLAVE_SECRETA.
 La Raspberry guarda primero en SD y transmite el archivo a FastAPI; el backend
 sube a B2 y genera enlaces temporales al visualizar. Si B2 falla, el archivo
 local se conserva y la petición no queda ejecutada.
+
+PERSISTENCIA DE METADATOS
+Antes de subir a B2, FastAPI registra en Ani_cam.archivos un metadato pendiente
+con id_camara, peticion_id, tipo, nombre_archivo, fecha_hora, clave_b2 y MIME.
+Después de confirmar B2, verifica que archivos quede confirmado y que la
+petición quede ejecutada. Si MongoDB falla, FastAPI responde error y no informa
+un éxito falso. Si B2 falla, esos metadatos y la petición quedan en error. Las
+capturas PIR también registran su evento pendiente y lo
+actualizan al confirmar o fallar. Para verificar: en la PC del backend, use
+mongosh, seleccione Ani_cam y consulte archivos por id_camara. FastAPI crea
+índices no únicos e idempotentes para polling e historiales al iniciar; no borra
+ni modifica documentos existentes.
 
 PROBLEMAS FRECUENTES
 - Raspberry sin backend: revisar URL_BACKEND, IP, ping, puerto 8000, firewall y

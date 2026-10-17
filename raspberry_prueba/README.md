@@ -5,9 +5,10 @@ las peticiones creadas desde el Dashboard. Usa una cámara CSI para generar foto
 JPEG o videos MP4, conserva las capturas en la tarjeta SD y permite ver el
 resultado local desde la misma ventana.
 
-La Raspberry se conecta únicamente a FastAPI mediante HTTP. No se conecta a MongoDB,
-ni al dashboard. Los JPEG y MP4 se conservan en la tarjeta SD y FastAPI registra sus
-metadatos en la colección `archivos` al recibir el resultado.
+La Raspberry se conecta únicamente a FastAPI mediante HTTP. No se conecta a MongoDB
+ni al Dashboard. Los JPEG y MP4 se conservan en la tarjeta SD; tras cerrar cada
+captura, la Raspberry la envía a FastAPI, que persiste y confirma sus metadatos en
+la colección `archivos` antes de informar éxito.
 
 ## Tecnologia elegida
 
@@ -92,9 +93,12 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 La interfaz consulta cada cinco segundos `GET /peticiones/pendientes/camara001`.
-Cuando recibe una solicitud, usa Picamera2, guarda el archivo local y llama a
-`PUT /peticiones/{id}/resultado`. Para cambiar el intervalo o los segundos del
-video se pueden definir `INTERVALO_CONSULTA_MS` y `DURACION_VIDEO_SEGUNDOS`.
+Cuando recibe una solicitud, usa Picamera2, guarda el archivo local y lo envía
+a `POST /peticiones/{id}/archivo`; FastAPI confirma B2 y MongoDB. Si la carga o
+la cámara fallan, comunica el error con `PUT /peticiones/{id}/resultado`; una
+captura correcta no se marca ejecutada por esa ruta sin su archivo confirmado.
+Para cambiar el intervalo o los segundos del video se pueden definir
+`INTERVALO_CONSULTA_MS` y `DURACION_VIDEO_SEGUNDOS`.
 
 La ventana muestra si puede comunicarse con FastAPI y el resultado de cada
 petición. La captura no se inicia con botones locales: se ejecuta al recibir una
@@ -109,7 +113,17 @@ orden pendiente del Dashboard.
 5. Confirma que la petición aparece en la tabla de la Raspberry y cambia a
    `ejecutado`, o a `error` con un mensaje comprensible.
 6. Comprueba que aparece el archivo en `archivos/camara001/fotos/` o `videos/`.
-7. Selecciona una petición ejecutada y pulsa **Ver foto o reproducir video**.
+7. Pulsa **Visualizar** en la fila de una petición ejecutada para abrir su
+   fotografía o reproducir su video local. La tabla muestra Tipo, Fecha, Estado
+   y esa acción; el identificador interno continúa asociado a la petición, pero
+   no se expone como columna.
+
+La Raspberry abre sus copias locales de SD según el tipo de la petición
+(`foto` o `video`); no consume URLs temporales de B2 en su visor. Por ello la
+normalización de `imagen`/`image/jpeg` usada por el visor del Dashboard no
+modifica este recorrido. La reproducción local de MP4 sigue requiriendo
+`python3-pyside6.qtmultimedia`, `ffmpeg` y un backend Qt Multimedia compatible
+con el códec generado por la cámara.
 10. Cierra la ventana. La aplicacion detiene cualquier grabacion y libera la camara.
 
 ## Problemas comunes
@@ -156,10 +170,9 @@ python3-gpiozero`. No instale esta biblioteca desde Windows para la Raspberry.
 
 Conecte GND del PIR a GND de la Pi, aliméntelo según su módulo y conecte OUT a
 un GPIO libre compatible con **3,3 V**. Los GPIO no toleran una salida de 5 V;
-use un conversor de nivel si el PIR no entrega 3,3 V. No hay pin supuesto: antes
-de iniciar configure `PIR_PIN_BCM` con la numeración BCM del GPIO cableado y
-`PIR_HABILITADO_LOCAL=true`. Por ejemplo, no copie un número sin comprobar el
-diagrama físico de su instalación.
+use un conversor de nivel si el PIR no entrega 3,3 V. El valor configurado por
+defecto es `PIR_PIN_BCM=17` y `PIR_HABILITADO_LOCAL=true`; cámbielos sólo si el
+cableado físico usa otro GPIO BCM.
 
 El Dashboard guarda por cámara si el PIR está habilitado, el tipo (`foto` o
 `video`) y un cooldown de 3 a 3600 segundos. La Raspberry actualiza esa

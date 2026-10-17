@@ -1,6 +1,6 @@
 # DOCUMENTACIÓN DE LA INTEGRACIÓN DASHBOARD FASTAPI RASPBERRY PI
 
-Fecha de actualización: 06-10-2026
+Fecha de actualización: 17-10-2026
 Proyecto: Cámara Trampa Inteligente para Reserva Natural
 Base de datos: Ani_cam
 
@@ -65,8 +65,8 @@ Dashboard PySide6
   v
 FastAPI -------------------- MongoDB Ani_cam
   ^                              |
-  | GET petición pendiente        | peticiones y archivos
-  | PUT resultado                 v
+  | GET petición pendiente        | peticiones, eventos y archivos
+  | POST archivo / PUT error      v
 Raspberry Pi con PySide6 y Picamera2
   |
   v
@@ -75,7 +75,8 @@ Foto JPEG o video MP4 en la tarjeta SD
 
 El Dashboard no se comunica directamente con la Raspberry. El Dashboard crea y
 consulta peticiones a través de FastAPI. La Raspberry también usa FastAPI, pero
-solo para pedir su trabajo pendiente e informar su resultado.
+sólo para pedir su trabajo pendiente, transferir una captura terminada y
+comunicar un error de hardware o de red cuando no pudo completar esa carga.
 
 ## 3. Estado real del proyecto
 
@@ -130,9 +131,11 @@ en el hardware real.
    el endpoint de pendientes.
 7. FastAPI devuelve la petición pendiente más antigua de esa cámara.
 8. La Raspberry usa `ControladorCamara.tomar_foto` para generar el JPEG local.
-9. La Raspberry llama a FastAPI para informar el resultado y la ruta local.
-10. FastAPI inserta los metadatos en `Ani_cam.archivos`, enlaza el archivo con
-    la petición y cambia su estado a `ejecutado`.
+9. La Raspberry verifica el JPEG local y lo transmite mediante
+   `POST /api/v1/peticiones/{id}/archivo`.
+10. FastAPI inserta primero un metadato `pendiente` en `Ani_cam.archivos`, sube
+    los bytes a B2 y, sólo si ambas confirmaciones son correctas, enlaza el
+    archivo con la petición y cambia su estado a `ejecutado`.
 11. Cuando el Dashboard actualiza la tabla, muestra `ejecutado` y el nombre del
     archivo. La Raspberry permite ver la imagen local en su propia interfaz.
 
@@ -148,8 +151,10 @@ El inicio del flujo es igual al de foto. La diferencia es la ejecución local:
    `H264Encoder` y `FfmpegOutput`.
 3. Después de la duración configurada, `ControladorCamara.detener_video`
    finaliza el MP4.
-4. La Raspberry informa el resultado a FastAPI.
-5. FastAPI registra el archivo y actualiza la petición a `ejecutado`.
+4. La Raspberry detiene ffmpeg, comprueba que el MP4 existe y lo envía a
+   `POST /api/v1/peticiones/{id}/archivo`.
+5. FastAPI sigue el mismo orden de persistencia que para foto: metadato
+   pendiente, B2, metadato confirmado y petición ejecutada.
 
 La duración por defecto es diez segundos. Se puede cambiar sin editar código
 definiendo la variable de entorno `DURACION_VIDEO_SEGUNDOS`.
@@ -200,9 +205,11 @@ conectarla con la petición:
   "id_camara": "camara001",
   "peticion_id": "ObjectId de la petición convertido a texto",
   "tipo": "imagen",
-  "nombre_archivo": "/ruta/local/de/la/Raspberry/foto_001.jpg",
-  "ruta_local": "/ruta/local/de/la/Raspberry/foto_001.jpg",
-  "fecha_hora": "2026-09-25 10:30:15"
+  "nombre_archivo": "foto_001.jpg",
+  "fecha_hora": "2026-09-25 10:30:15",
+  "clave_b2": "camaras/camara001/imagen/<peticion_id>.jpg",
+  "estado_subida": "confirmada",
+  "tipo_contenido": "image/jpeg"
 }
 ```
 
@@ -249,18 +256,11 @@ GET /api/v1/peticiones/pendientes/camara001
 
 ### PUT /api/v1/peticiones/{peticion_id}/resultado
 
-Lo consume exclusivamente la Raspberry al finalizar una captura. Acepta solo
-los estados finales `ejecutado` o `error`; no permite crear estados nuevos.
-
-Ejemplo de captura correcta:
-
-```json
-{
-  "estado": "ejecutado",
-  "nombre_archivo": "foto_001.jpg",
-  "ruta_local": "/home/pi/proyecto/archivos/camara001/fotos/foto_001.jpg"
-}
-```
+Lo consume exclusivamente la Raspberry para informar un fallo de cámara o de
+transferencia. Una captura correcta se confirma mediante el endpoint de carga;
+enviar `ejecutado` por esta ruta sin un archivo ya confirmado devuelve HTTP 422.
+Si la respuesta final de la carga se perdió, un reintento puede reconciliar una
+captura que ya figure como confirmada, sin duplicar el archivo.
 
 Ejemplo de error:
 
@@ -273,6 +273,14 @@ Ejemplo de error:
 
 Si una petición ya fue resuelta, FastAPI rechaza otro resultado con HTTP 409.
 Esto protege el historial contra actualizaciones tardías o duplicadas.
+
+### POST /api/v1/peticiones/{peticion_id}/archivo
+
+Lo consume la Raspberry después de cerrar el JPEG o MP4 local. Recibe el archivo
+como `multipart/form-data`; valida que su extensión coincida con el tipo de la
+petición y no comunica éxito hasta que B2 y MongoDB confirman el mismo archivo.
+Los reintentos reutilizan la clave B2 y el metadato asociados a la petición, por
+lo que no crean una segunda captura lógica.
 
 ## 8. Interfaz de la Raspberry
 
@@ -356,10 +364,11 @@ Prueba de backend desconectado:
 
 ## 11. Límites actuales
 
-- Los archivos permanecen en la tarjeta SD de la Raspberry; no se suben a la
-  nube ni se transfieren al Dashboard.
-- La reproducción y visualización de archivos se realiza localmente en la
-  Raspberry, no desde el Dashboard.
+- La Raspberry conserva una copia local en la tarjeta SD y FastAPI sube otra
+  copia privada a Backblaze B2; el Dashboard sólo obtiene una URL temporal a
+  través del backend, nunca las credenciales de B2.
+- La reproducción integrada depende de Qt Multimedia y del códec disponible en
+  cada equipo; la validación final de MP4 requiere una Raspberry real.
 - No se implementaron MQTT, Redis, RabbitMQ, WebSockets, Docker ni servicios de
   mensajería, porque no son necesarios para esta etapa educativa.
 - Los eventos continúan siendo un historial independiente y no se crean desde
@@ -369,8 +378,10 @@ Prueba de backend desconectado:
 
 - `backend/models/schemas.py`: validación de resultados y campos opcionales de
   respuesta de peticiones.
-- `backend/routers/peticiones.py`: polling, registro de resultado y relación
-  con `archivos`.
+- `backend/routers/peticiones.py`: polling, carga de capturas, registro de
+  errores y relación con `archivos` y eventos PIR.
+- `backend/database/connection.py`: cliente compartido de MongoDB e índices de
+  consulta idempotentes para los filtros reales del sistema.
 - `desktop_app/widgets/ventana_principal.py`: columna Resultado en la tabla existente.
 - `raspberry_prueba/comunicacion/cliente_backend.py`: cliente HTTP de la Raspberry.
 - `raspberry_prueba/interfaz/ventana_principal.py`: monitor de peticiones.
@@ -486,3 +497,55 @@ La revisión específica de Raspberry cubrió `config.py`, `main.py`, cámara,
 almacenamiento, comunicación, interfaz y pruebas. Cada módulo explica su
 responsabilidad, composición, herencia cuando aplica, señales Qt, polling HTTP,
 persistencia local y el límite entre Raspberry, FastAPI y MongoDB.
+
+## 17. Corrección de persistencia de metadatos (2026-10-14)
+
+La revisión del flujo de capturas identificó que `/peticiones/{id}/archivo`
+subía el objeto a Backblaze B2 antes de insertar o actualizar el documento de
+`Ani_cam.archivos`. Las operaciones de MongoDB no verificaban el resultado. Por
+eso una falla de MongoDB posterior a una subida confirmada podía dejar una
+captura visible en B2 sin metadato, sin relación con su petición y sin una
+respuesta que distinguiera ambos fallos.
+
+La corrección conserva la arquitectura Raspberry -> FastAPI -> MongoDB/B2 y las
+colecciones existentes. Antes de llamar a B2, FastAPI inserta un documento de
+`archivos` en estado `pendiente` con `id_camara`, `peticion_id`, tipo `imagen` o
+`video`, nombre, fecha, clave B2 y MIME. Si esa operación falla, responde HTTP
+503 y B2 no recibe el archivo. Tras B2, comprueba los resultados de las
+actualizaciones de `archivos` y `peticiones`; sólo entonces responde ejecutado.
+Un error de confirmación queda en el log sin exponer secretos y nunca comunica
+éxito falso. Si B2 rechaza la carga, FastAPI pasa el metadato, la petición y el
+evento PIR relacionado a `error` en esa misma llamada; no depende de otra
+notificación de la Raspberry para reflejar ese fallo.
+
+Cuando el origen es PIR, el backend crea un documento `eventos` pendiente antes
+de crear la petición, conserva los vínculos `evento_id` en la petición e
+`id_evento` en el archivo y actualiza el estado del evento junto con el resultado
+de la captura. El pin predeterminado configurado es BCM 17 y puede ajustarse por
+`PIR_PIN_BCM` si el cableado físico difiere.
+
+Comprobaciones realizadas en esta PC: el servicio MongoDB estaba en ejecución,
+PyMongo confirmó acceso a `Ani_cam` y a las colecciones existentes `archivos`,
+`camaras`, `eventos`, `peticiones` y `usuarios`; también se verificó que no había
+duplicados actuales de `archivos.peticion_id`. La prueba física con Raspberry,
+B2 y una captura nueva sigue pendiente porque esos recursos no están disponibles
+en este entorno. Para una verificación completa: iniciar MongoDB y Uvicorn,
+configurar `URL_BACKEND` con la IPv4 de la PC en la Raspberry, ejecutar una foto
+y un video, y consultar en `Ani_cam.archivos` el `id_camara`, `peticion_id`,
+`tipo`, `estado_subida` y, para PIR, `id_evento`.
+
+## 18. Optimización conservadora y ciclo de recursos (2026-10-17)
+
+Al iniciar FastAPI, `database.connection.preparar_indices` asegura índices no
+únicos para las consultas frecuentes: petición pendiente por cámara y estado,
+historial de peticiones, archivos por cámara/petición/evento, eventos por fecha
+y usuario de inicio de sesión. Los índices no modifican ni eliminan documentos;
+si la cuenta de MongoDB no puede crearlos, el backend continúa funcionando y
+emite una advertencia sin revelar la URI ni credenciales.
+
+El Dashboard cierra su sesión `requests.Session` al finalizar y la comprobación
+aislada de conexión cierra también su sesión temporal. La URL del Dashboard se
+puede adaptar sin editar código con `ANICAM_API_BASE_URL`; si no se define,
+permanece `http://127.0.0.1:8000/api/v1`. En Raspberry, el listado local usa una
+sola lectura de metadatos por archivo y tolera que una captura desaparezca entre
+el recorrido del directorio y la consulta, sin afectar el polling ni la cámara.

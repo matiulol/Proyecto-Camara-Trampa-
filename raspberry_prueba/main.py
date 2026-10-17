@@ -49,9 +49,6 @@ def iniciar_aplicacion() -> int:
     # La URL y el identificador se leen desde configuración para que el mismo
     # programa pueda instalarse en otras Raspberry sin editar esta función.
     cliente = ClienteBackend(URL_BACKEND)
-    # El pin pertenece a la instalación física; el comportamiento (tipo y
-    # cooldown) llega desde la configuración persistida de la cámara.
-    sensor = SensorPIR(PIR_PIN_BCM, lambda: ventana.movimiento_detectado.emit()) if PIR_HABILITADO_LOCAL else None
     # La ventana recibe los objetos ya preparados en vez de crearlos por dentro.
     # Así coordina el caso de uso (consultar y capturar), mientras cada objeto
     # conserva su especialidad y puede probarse de forma independiente.
@@ -61,12 +58,17 @@ def iniciar_aplicacion() -> int:
         cliente,
         INTERVALO_CONSULTA_MS,
         DURACION_VIDEO_SEGUNDOS,
-        sensor,
         INTERVALO_CONFIGURACION_PIR_MS,
     )
-    # El callback se asigna después de crear Qt para cruzar de GPIO a la señal.
-    if sensor:
-        sensor.al_detectar = lambda: ventana.movimiento_detectado.emit()
+    # La señal de la ventana ya existe y su slot está conectado antes de abrir
+    # GPIO. El callback del PIR sólo emite esa señal: Qt traslada el trabajo al
+    # hilo de la interfaz y el sensor nunca manipula widgets directamente.
+    # Antes se construía el sensor con una lambda que referenciaba ``ventana``
+    # antes de que la variable estuviera asignada; además, el sensor podía
+    # iniciarse desde el constructor de la ventana antes de reemplazarla.
+    if PIR_HABILITADO_LOCAL:
+        sensor = SensorPIR(PIR_PIN_BCM, ventana.movimiento_detectado.emit)
+        ventana.iniciar_sensor_pir(sensor)
     # Mostrar la ventana no bloquea: Qt comienza a atender sus eventos al
     # entrar en ``exec`` y termina cuando el usuario cierra la aplicación.
     ventana.show()

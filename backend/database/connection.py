@@ -2,13 +2,44 @@
 
 # MongoClient abre y administra el canal de comunicación con MongoDB. Database
 # se usa para indicar que la variable database representa una base concreta.
-from pymongo import MongoClient
+import logging
+
+from pymongo import ASCENDING, DESCENDING, MongoClient
 from pymongo.database import Database
-from pymongo.errors import ConfigurationError, ConnectionFailure, OperationFailure
+from pymongo.errors import ConfigurationError, ConnectionFailure, OperationFailure, PyMongoError
 
 # settings centraliza la URI, el nombre Ani_cam y el tiempo máximo de conexión.
 # Así ningún router escribe estos valores directamente en su propio código.
 from config.settings import settings
+
+
+logger = logging.getLogger(__name__)
+
+# Estos índices no son únicos ni cambian documentos existentes. Corresponden a
+# los filtros y ordenamientos que usan Dashboard y Raspberry: el polling busca
+# la orden pendiente más antigua de una cámara, mientras las demás pantallas
+# consultan historiales y archivos por sus relaciones ya existentes.
+INDICES_CONSULTA: tuple[tuple[str, tuple[tuple[str, int], ...], str], ...] = (
+    (
+        "peticiones",
+        (("camara_id", ASCENDING), ("estado", ASCENDING), ("fecha_hora", ASCENDING)),
+        "peticiones_pendientes_por_camara",
+    ),
+    (
+        "peticiones",
+        (("fecha_hora", DESCENDING),),
+        "peticiones_historial_por_fecha",
+    ),
+    ("archivos", (("id_camara", ASCENDING),), "archivos_por_camara"),
+    ("archivos", (("peticion_id", ASCENDING),), "archivos_por_peticion"),
+    ("archivos", (("id_evento", ASCENDING),), "archivos_por_evento"),
+    (
+        "eventos",
+        (("fecha", DESCENDING), ("hora", DESCENDING)),
+        "eventos_historial_por_fecha",
+    ),
+    ("usuarios", (("usuario", ASCENDING),), "usuarios_por_nombre"),
+)
 
 
 def _crear_cliente() -> MongoClient:
@@ -55,6 +86,31 @@ def comprobar_conexion() -> None:
             "No se pudo conectar a MongoDB local. Verifique que el servicio esté "
             "iniciado en localhost:27017 y que MONGODB_DATABASE sea Ani_cam."
         ) from None
+
+
+def preparar_indices(db: Database | None = None) -> bool:
+    """Asegura índices de consulta sin migrar ni modificar datos de ``Ani_cam``.
+
+    MongoDB ignora una creación cuyo índice con el mismo nombre ya existe, por
+    lo que esta operación es idempotente y se puede invocar en cada arranque.
+    Si la cuenta local no dispone de permiso para crear índices, FastAPI sigue
+    disponible —las consultas son correctas aunque menos eficientes— y deja una
+    advertencia clara en el registro del servidor.
+    """
+    destino = database if db is None else db
+    try:
+        for coleccion, campos, nombre in INDICES_CONSULTA:
+            destino[coleccion].create_index(list(campos), name=nombre)
+    except PyMongoError:
+        # No se incluye el error original porque algunos controladores de Mongo
+        # pueden incorporar detalles de conexión. La advertencia permite
+        # diagnosticar permisos sin arriesgar credenciales en los logs.
+        logger.warning(
+            "No se pudieron preparar los índices de consulta de Ani_cam; "
+            "el backend continuará sin esa optimización."
+        )
+        return False
+    return True
 
 
 def cerrar_conexion() -> None:

@@ -23,7 +23,6 @@ class ErrorBackend(RuntimeError):
     FastAPI de un error de cámara y decidir que el siguiente polling reintente.
     """
 
-
 class ClienteBackend:
     """Cliente de una API REST para la Raspberry, sin acceso directo a MongoDB.
 
