@@ -1,1 +1,0 @@
-"""Configuracion general del backend."""

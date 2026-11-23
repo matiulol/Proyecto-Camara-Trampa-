@@ -3,23 +3,27 @@ __pycache__/
 *.py[cod]
 *.pyo
 
-# Virtual environments
+# Entornos virtuales
 venv/
 .venv/
 env/
 
-# VS Code
+# Visual Studio Code
 .vscode/
 
 # PyCharm
 .idea/
 
-# Logs
+# Registros
 *.log
 
-# Environment variables
+# Variables de entorno
 .env
 **/.env
+.env.*
+**/.env.*
+!.env.example
+!**/.env.example
 
 # macOS
 .DS_Store
@@ -27,23 +31,38 @@ env/
 # Windows
 Thumbs.db
 
-# Python packaging
+# Empaquetado de Python
 build/
 dist/
 *.egg-info/
 
-# pytest
+# Caché de pytest
 .pytest_cache/
+.tox/
+.ruff_cache/
+.hypothesis/
 
-# mypy
+# Análisis de tipos con mypy
 .mypy_cache/
 
-# Coverage
+# Cobertura
 .coverage
+.coverage.*
 htmlcov/
 
-# Jupyter
+# Cuadernos Jupyter
 .ipynb_checkpoints/
 
 # SQLite
 *.sqlite3
+
+# Archivos temporales y generados por el editor
+*.tmp
+*.temp
+*.swp
+*~
+
+# Capturas locales creadas por la aplicación Raspberry Pi
+raspberry_pi/archivos/**/*.jpg
+raspberry_pi/archivos/**/*.jpeg
+raspberry_pi/archivos/**/*.mp4
